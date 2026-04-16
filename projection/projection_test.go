@@ -1,0 +1,50 @@
+package projection
+
+import (
+	"math"
+	"testing"
+)
+
+const tol = 1e-6
+
+func approxEq(a, b float64) bool { return math.Abs(a-b) < tol }
+
+func TestProjectUnprojectRoundTrip(t *testing.T) {
+	cases := []LatLng{
+		{Lat: 0, Lng: 0},
+		{Lat: 47.6062, Lng: -122.3321}, // Seattle
+		{Lat: -33.8688, Lng: 151.2093}, // Sydney
+		{Lat: 51.5074, Lng: -0.1278},   // London
+	}
+	for _, z := range []uint32{0, 5, 10, 18} {
+		for _, p := range cases {
+			got := Unproject(Project(p, z), z)
+			if !approxEq(got.Lat, p.Lat) || !approxEq(got.Lng, p.Lng) {
+				t.Errorf("z=%d in=%+v got=%+v", z, p, got)
+			}
+		}
+	}
+}
+
+func TestProjectOriginTopLeft(t *testing.T) {
+	pt := Project(LatLng{Lat: 85.05112878, Lng: -180}, 0)
+	if !approxEq(pt.X, 0) || pt.Y > 1 || pt.Y < -1 {
+		t.Errorf("NW corner expected (0,0), got %+v", pt)
+	}
+}
+
+func TestClampWrapsLongitude(t *testing.T) {
+	p := LatLng{Lat: 0, Lng: 200}.Clamp()
+	if !approxEq(p.Lng, -160) {
+		t.Errorf("wrap 200 -> -160, got %v", p.Lng)
+	}
+}
+
+func TestWorldSizeDoublesPerZoom(t *testing.T) {
+	for z := uint32(0); z < 20; z++ {
+		want := 256.0 * math.Pow(2, float64(z))
+		if got := WorldSize(z); !approxEq(got, want) {
+			t.Errorf("z=%d want=%v got=%v", z, want, got)
+		}
+	}
+}

@@ -1,0 +1,30 @@
+# ignore all
+*
+# unignore files with extensions
+!*.*
+# unignore all dirs
+!*/
+### Above combination will ignore all files without extension
+
+!Makefile
+!LICENSE
+
+# Binaries# Binaries
+*.exe
+*.test
+*.out
+*.prof
+
+# Test
+coverage.*
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Tile cache (if persisted during dev)
+tile-cache/
