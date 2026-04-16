@@ -23,6 +23,10 @@ func testSource(t *testing.T, baseURL, ua string) *osmSource {
 	}
 }
 
+// pngFixture is the eight-byte PNG signature plus a short payload —
+// enough to satisfy isPNG; tests never decode the bytes.
+var pngFixture = []byte("\x89PNG\r\n\x1a\nfake-payload")
+
 func TestOSM_URL(t *testing.T) {
 	s := OSM()
 	cases := []struct {
@@ -68,6 +72,7 @@ func TestOSM_HTTPFetcher_SendsUserAgent(t *testing.T) {
 			gotUA = r.Header.Get("User-Agent")
 			w.Header().Set("Content-Type", "image/png")
 			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(pngFixture)
 		}))
 	defer srv.Close()
 
@@ -160,13 +165,15 @@ func TestOSMWithUserAgent_AppliesSanitizer(t *testing.T) {
 
 // LimitReader must cap response-body size; a hostile or
 // misconfigured server returning gigabytes must not OOM the caller.
+// Body is prefixed with a PNG signature so the post-LimitReader
+// validator passes; the test then checks that the returned body
+// stops at maxTileBytes.
 func TestOSM_Fetch_LimitsResponseBody(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "image/png")
 			w.WriteHeader(http.StatusOK)
-			// Write more than maxTileBytes; LimitReader should
-			// truncate the read.
+			_, _ = w.Write(pngMagic)
 			big := make([]byte, maxTileBytes+(1<<20))
 			_, _ = w.Write(big)
 		}))
@@ -179,6 +186,86 @@ func TestOSM_Fetch_LimitsResponseBody(t *testing.T) {
 	}
 	if int64(len(body)) > maxTileBytes {
 		t.Errorf("body len = %d, exceeds cap %d", len(body), maxTileBytes)
+	}
+}
+
+// HTTPFetcher must reject 200 OK responses whose body lacks a PNG
+// signature — OSM occasionally returns empty bodies under load and
+// go-gui would otherwise cache the garbage on disk.
+func TestOSM_HTTPFetcher_RejectsEmptyBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "image/png")
+			w.WriteHeader(http.StatusOK)
+		}))
+	defer srv.Close()
+
+	src := OSMWithUserAgent("t/0").(HTTPFetcher)
+	_, err := src.HTTPFetcher()(context.Background(), srv.URL+"/0/0/0.png")
+	if err == nil {
+		t.Fatal("err = nil, want rejection of empty body")
+	}
+	if !strings.Contains(err.Error(), "not a PNG") {
+		t.Errorf("err = %v, want \"not a PNG\"", err)
+	}
+}
+
+func TestOSM_HTTPFetcher_RejectsNonPNGBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "image/png")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, "<html>503 Backend Overloaded</html>")
+		}))
+	defer srv.Close()
+
+	src := OSMWithUserAgent("t/0").(HTTPFetcher)
+	_, err := src.HTTPFetcher()(context.Background(), srv.URL+"/0/0/0.png")
+	if err == nil {
+		t.Fatal("err = nil, want rejection of HTML body")
+	}
+	if !strings.Contains(err.Error(), "not a PNG") {
+		t.Errorf("err = %v, want \"not a PNG\"", err)
+	}
+}
+
+// HTTPFetcher must pass non-200 responses through unmodified so
+// go-gui's existing status-code log fires; the body validator must
+// not even run.
+func TestOSM_HTTPFetcher_PassesThroughNon200(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}))
+	defer srv.Close()
+
+	src := OSMWithUserAgent("t/0").(HTTPFetcher)
+	resp, err := src.HTTPFetcher()(context.Background(), srv.URL+"/0/0/0.png")
+	if err != nil {
+		t.Fatalf("err = %v, want nil for non-200 passthrough", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("StatusCode = %d, want 503", resp.StatusCode)
+	}
+}
+
+func TestIsPNG(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []byte
+		want bool
+	}{
+		{"empty", nil, false},
+		{"too_short", []byte{0x89, 'P', 'N'}, false},
+		{"png", pngFixture, true},
+		{"html", []byte("<html>"), false},
+		{"jpeg_magic", []byte{0xFF, 0xD8, 0xFF, 0xE0}, false},
+	}
+	for _, c := range cases {
+		if got := isPNG(c.in); got != c.want {
+			t.Errorf("%s: isPNG = %v, want %v", c.name, got, c.want)
+		}
 	}
 }
 
@@ -224,7 +311,7 @@ func TestTestSource_FetchHitsRightPath(t *testing.T) {
 		func(w http.ResponseWriter, r *http.Request) {
 			gotPath = r.URL.Path
 			w.WriteHeader(http.StatusOK)
-			_, _ = io.WriteString(w, "ok")
+			_, _ = w.Write(pngFixture)
 		}))
 	defer srv.Close()
 

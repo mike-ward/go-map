@@ -1,6 +1,7 @@
 package tile
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -108,7 +109,15 @@ func (s *osmSource) Fetch(ctx context.Context, c Coord) ([]byte, error) {
 	defer func() { _ = resp.Body.Close() }()
 	switch resp.StatusCode {
 	case http.StatusOK:
-		return io.ReadAll(io.LimitReader(resp.Body, maxTileBytes))
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxTileBytes))
+		if err != nil {
+			return nil, err
+		}
+		if !isPNG(body) {
+			return nil, fmt.Errorf(
+				"tile %s: %d-byte body is not a PNG", url, len(body))
+		}
+		return body, nil
 	case http.StatusNotFound:
 		return nil, ErrNotFound
 	default:
@@ -123,12 +132,18 @@ func (s *osmSource) Attribution() string {
 func (*osmSource) MaxZoom() uint32 { return 19 }
 
 // HTTPFetcher returns a function suitable for
-// gui.WindowCfg.ImageFetcher. It sends the Source's User-Agent on
-// every request — required by OSM tile policy when rendering via
-// gui.DrawContext.Image. The response body is wrapped with
-// io.LimitReader(maxTileBytes) so a hostile or misconfigured server
-// cannot drive the renderer's image decoder into unbounded reads —
-// the same cap Fetch enforces.
+// gui.WindowCfg.ImageFetcher. Sends the Source's User-Agent on every
+// request — required by OSM tile policy when rendering via
+// gui.DrawContext.Image.
+//
+// On 200 OK the body is read fully (cap maxTileBytes) and validated
+// against a PNG signature before the response is returned. OSM
+// intermittently answers 200 with an empty or HTML body under load;
+// without this check go-gui would cache that garbage on disk and
+// every subsequent frame would log "decode image: unknown format".
+// Reading the body up front is cheap because tiles are small (≤ ~100
+// KiB); the in-memory buffer is then wrapped in a NopCloser so the
+// downstream io.Copy still streams.
 func (s *osmSource) HTTPFetcher() func(ctx context.Context, url string) (*http.Response, error) {
 	return func(ctx context.Context, url string) (*http.Response, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -140,19 +155,33 @@ func (s *osmSource) HTTPFetcher() func(ctx context.Context, url string) (*http.R
 		if err != nil {
 			return nil, err
 		}
-		resp.Body = limitedBody(resp.Body, maxTileBytes)
+		// Non-OK statuses pass through so go-gui's status-code log fires.
+		if resp.StatusCode != http.StatusOK {
+			return resp, nil
+		}
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxTileBytes))
+		_ = resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("tile body: %w", err)
+		}
+		if !isPNG(body) {
+			return nil, fmt.Errorf(
+				"tile %s: %d-byte body is not a PNG", url, len(body))
+		}
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		resp.ContentLength = int64(len(body))
 		return resp, nil
 	}
 }
 
-// limitedBody wraps an io.ReadCloser so the consumer cannot read
-// past n bytes. Close still hits the original body so the
-// underlying connection can be released to the http.Client pool.
-func limitedBody(rc io.ReadCloser, n int64) io.ReadCloser {
-	return struct {
-		io.Reader
-		io.Closer
-	}{io.LimitReader(rc, n), rc}
+// pngMagic is the eight-byte PNG file signature (RFC 2083 §3.1).
+var pngMagic = []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
+
+// isPNG reports whether b begins with the PNG file signature. A
+// zero-length or HTML-error body fails the check; a real PNG passes
+// even before the IDAT chunks are inspected.
+func isPNG(b []byte) bool {
+	return len(b) >= len(pngMagic) && bytes.Equal(b[:len(pngMagic)], pngMagic)
 }
 
 // HTTPFetcher is implemented by Sources that speak HTTP and can
