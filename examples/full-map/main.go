@@ -61,6 +61,33 @@ func view(w *gui.Window) gui.View {
 				InitialZoom:   cities[0].Zoom,
 				Source:        src,
 				A11YLabel:     "Interactive world map",
+				InitialOverlays: []mapview.Overlay{
+					&mapview.Marker{
+						MarkerID: "seattle",
+						Pos:      cities[0].Center,
+						Label:    "Seattle",
+					},
+					&mapview.Marker{
+						MarkerID: "london",
+						Pos:      cities[1].Center,
+						Label:    "London",
+					},
+					&mapview.Marker{
+						MarkerID: "tokyo",
+						Pos:      cities[2].Center,
+						Label:    "Tokyo",
+					},
+					&mapview.Marker{
+						MarkerID: "sydney",
+						Pos:      cities[3].Center,
+						Label:    "Sydney",
+					},
+				},
+				OnPOISelect: func(w *gui.Window, o mapview.Overlay) {
+					if m, ok := o.(*mapview.Marker); ok {
+						mapview.PanTo(w, mapID, m.Pos)
+					}
+				},
 			}),
 		},
 	})

@@ -10,10 +10,12 @@ import (
 
 // viewport holds the derived screen geometry for one frame: size in
 // pixels, the world-pixel position of the center, and the tile range
-// visible on screen. Computed once per OnDraw from MapState.
+// visible on screen. Computed once per OnDraw from MapState. The zoom
+// field is named Z so viewport can expose a Zoom() method and satisfy
+// the overlay Projector interface without a wrapper type.
 type viewport struct {
 	W, H    float32 // canvas size in pixels
-	Zoom    uint32
+	Z       uint32
 	CtrPx   projection.Point // world-pixel coords of state.Center
 	MinTX   int32
 	MaxTX   int32
@@ -27,7 +29,7 @@ type viewport struct {
 // canvas size and map state. Kept pure (no DrawContext) so viewport
 // math is unit-testable without a running window.
 func computeViewport(w, h float32, s MapState) viewport {
-	vp := viewport{W: w, H: h, Zoom: s.Zoom}
+	vp := viewport{W: w, H: h, Z: s.Zoom}
 	vp.CtrPx = projection.Project(s.Center, s.Zoom)
 	vp.OriginX = float32(vp.CtrPx.X) - vp.W/2
 	vp.OriginY = float32(vp.CtrPx.Y) - vp.H/2
@@ -62,15 +64,36 @@ func (vp viewport) screenToLatLng(sx, sy float32) projection.LatLng {
 	return projection.Unproject(projection.Point{
 		X: float64(vp.OriginX + sx),
 		Y: float64(vp.OriginY + sy),
-	}, vp.Zoom)
+	}, vp.Z)
 }
+
+// LatLngToScreen projects p into canvas-pixel coords. Satisfies the
+// overlay Projector interface so overlays can be given a viewport
+// directly without an adapter type.
+func (vp viewport) LatLngToScreen(p projection.LatLng) (x, y float32) {
+	pt := projection.Project(p, vp.Z)
+	return float32(pt.X) - vp.OriginX, float32(pt.Y) - vp.OriginY
+}
+
+// MetersToPixels converts ground meters at the given latitude into
+// pixels at the viewport zoom. Returns 0 for non-finite derivations.
+func (vp viewport) MetersToPixels(lat, meters float64) float32 {
+	mpp := metersPerPixel(lat, vp.Z)
+	if !finitePositive(mpp) {
+		return 0
+	}
+	return float32(meters / mpp)
+}
+
+// Zoom reports the viewport's integer zoom level.
+func (vp viewport) Zoom() uint32 { return vp.Z }
 
 // drawTiles renders the visible tile grid. Tiles with a URL from the
 // Source render as gui.DrawContext.Image; sources without a URL (or
 // no Source at all) fall back to a labeled placeholder checkerboard
 // so pan/zoom is still usable.
 func drawTiles(dc *gui.DrawContext, vp viewport, src tile.Source) {
-	maxN := int32(1) << vp.Zoom
+	maxN := int32(1) << vp.Z
 	ts := float32(projection.TileSize)
 	even := gui.Hex(0xE8E6E0)
 	odd := gui.Hex(0xDCDAD3)
@@ -88,7 +111,7 @@ func drawTiles(dc *gui.DrawContext, vp viewport, src tile.Source) {
 			var url string
 			if src != nil {
 				url = src.URL(tile.Coord{
-					Z: vp.Zoom,
+					Z: vp.Z,
 					X: wrapped,
 					Y: uint32(ty),
 				})
@@ -105,7 +128,7 @@ func drawTiles(dc *gui.DrawContext, vp viewport, src tile.Source) {
 			dc.FilledRect(x, y, ts, ts, c)
 			dc.Rect(x, y, ts, ts, border, 1)
 			dc.Text(x+6, y+4,
-				(tile.Coord{Z: vp.Zoom, X: wrapped, Y: uint32(ty)}).String(),
+				(tile.Coord{Z: vp.Z, X: wrapped, Y: uint32(ty)}).String(),
 				labelStyle)
 		}
 	}

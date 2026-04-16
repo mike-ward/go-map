@@ -8,12 +8,17 @@ import (
 	"github.com/mike-ward/go-map/tile"
 )
 
-// onClick handles mouse-down on the canvas. HUD buttons get a hit
+// dragThresholdPx is the pixel distance separating a click from a pan.
+const dragThresholdPx float32 = 4
+
+// onMouseDown handles mouse-down on the canvas. HUD buttons get a hit
 // test first so the recenter button does not trigger a drag-pan;
-// otherwise a drag-pan session begins. MouseLock takes over the
-// subsequent mouse-move and mouse-up events so the drag survives
-// cursor travel outside the widget bounds.
-func onClick(id string, seed MapState) func(*gui.Layout, *gui.Event, *gui.Window) {
+// otherwise the press is recorded and MouseLock takes over the
+// subsequent mouse-move / mouse-up events. The press becomes a pan
+// only once the cursor leaves the drag-threshold radius; shorter
+// presses collapse into a click at mouse-up time.
+func onMouseDown(c Cfg, seed MapState) func(*gui.Layout, *gui.Event, *gui.Window) {
+	id := c.ID
 	return func(l *gui.Layout, e *gui.Event, w *gui.Window) {
 		if homeButtonHit(l.Shape.Width, e.MouseX, e.MouseY) {
 			nsWrite(w, nsState, id, seed)
@@ -22,18 +27,23 @@ func onClick(id string, seed MapState) func(*gui.Layout, *gui.Event, *gui.Window
 		}
 		s := nsRead[MapState](w, nsState, id)
 		// OnClick delivers widget-local coords; MouseLock callbacks
-		// deliver absolute coords. Store absolute to keep the delta
-		// math single-space across the drag.
+		// deliver absolute coords. Storing both, plus canvas size,
+		// lets panDragEnd resolve the release LatLng without a second
+		// event dispatch.
 		nsWrite(w, nsPan, id, panState{
 			Active:    true,
 			StartX:    e.MouseX + l.Shape.X,
 			StartY:    e.MouseY + l.Shape.Y,
+			LocalX:    e.MouseX,
+			LocalY:    e.MouseY,
 			StartCtr:  s.Center,
 			StartZoom: s.Zoom,
+			CanvasW:   l.Shape.Width,
+			CanvasH:   l.Shape.Height,
 		})
 		w.MouseLock(gui.MouseLockCfg{
 			MouseMove: panDragMove(id),
-			MouseUp:   panDragEnd(id),
+			MouseUp:   panDragEnd(c),
 		})
 		e.IsHandled = true
 	}
@@ -50,11 +60,22 @@ func panDragMove(id string) func(*gui.Layout, *gui.Event, *gui.Window) {
 		if !p.Active {
 			return
 		}
+		dx := p.StartX - e.MouseX
+		dy := p.StartY - e.MouseY
+		if !p.Moved {
+			// Swallow intra-threshold movement entirely. Prevents the
+			// map from jittering when the user shakes the pointer mid-
+			// click, and keeps the drag-vs-click decision crisp.
+			if dx*dx+dy*dy < dragThresholdPx*dragThresholdPx {
+				e.IsHandled = true
+				return
+			}
+			p.Moved = true
+			nsWrite(w, nsPan, id, p)
+		}
 		// Convert screen-pixel delta to world-pixel delta at the
 		// drag-start zoom. Inverting the sign gives "content follows
 		// cursor" feel.
-		dx := p.StartX - e.MouseX
-		dy := p.StartY - e.MouseY
 		startPt := projection.Project(p.StartCtr, p.StartZoom)
 		newCtr := projection.Unproject(projection.Point{
 			X: startPt.X + float64(dx),
@@ -68,12 +89,51 @@ func panDragMove(id string) func(*gui.Layout, *gui.Event, *gui.Window) {
 	}
 }
 
-func panDragEnd(id string) func(*gui.Layout, *gui.Event, *gui.Window) {
-	return func(_ *gui.Layout, _ *gui.Event, w *gui.Window) {
+// panDragEnd finalises a press-and-release. A drag that never crossed
+// the threshold becomes a click: OnPOISelect fires first for the
+// top-most overlay under the release point, then Marker.OnClick, then
+// Cfg.OnClick. The release point comes from the mouse-up event (in
+// absolute window coords) converted back into widget-local coords via
+// panState.StartX/Y; within the drag threshold this agrees with the
+// press point to within a few pixels.
+func panDragEnd(c Cfg) func(*gui.Layout, *gui.Event, *gui.Window) {
+	id := c.ID
+	return func(_ *gui.Layout, e *gui.Event, w *gui.Window) {
 		p := nsRead[panState](w, nsPan, id)
+		wasClick := p.Active && !p.Moved
 		p.Active = false
+		p.Moved = false
 		nsWrite(w, nsPan, id, p)
 		w.MouseUnlock()
+		if !wasClick {
+			return
+		}
+		// Up-event coords are absolute (MouseLock delivery convention);
+		// shift into widget-local space using the down-event offset.
+		upX := e.MouseX - (p.StartX - p.LocalX)
+		upY := e.MouseY - (p.StartY - p.LocalY)
+		s := nsRead[MapState](w, nsState, id)
+		vp := computeViewport(p.CanvasW, p.CanvasH, s)
+		// Hit-test once per click — nesting the loop inside an
+		// OnPOISelect-nil gate would mask a Marker.OnClick set on an
+		// overlay when the author elected not to set the map-level
+		// selector.
+		var hit Overlay
+		for _, o := range readOverlays(w, id) {
+			if o.HitTest(vp, upX, upY) {
+				hit = o
+				break
+			}
+		}
+		if hit != nil && c.OnPOISelect != nil {
+			c.OnPOISelect(w, hit)
+		}
+		if m, ok := hit.(*Marker); ok && m.OnClick != nil {
+			m.OnClick(w)
+		}
+		if c.OnClick != nil {
+			c.OnClick(w, vp.screenToLatLng(upX, upY))
+		}
 	}
 }
 

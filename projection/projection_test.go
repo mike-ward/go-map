@@ -82,6 +82,67 @@ func TestClamp_InfCoercesToZero(t *testing.T) {
 	}
 }
 
+// BoundsOf must include a (0,0) first vertex — the prior zero-Bounds
+// sentinel caused Extend to reset on the second vertex and silently
+// drop the origin point.
+func TestBoundsOf_IncludesOriginFirstVertex(t *testing.T) {
+	b := BoundsOf(
+		LatLng{Lat: 0, Lng: 0},
+		LatLng{Lat: 10, Lng: 20},
+		LatLng{Lat: -5, Lng: -15},
+	)
+	if b.NE != (LatLng{Lat: 10, Lng: 20}) {
+		t.Errorf("NE = %+v, want {10, 20}", b.NE)
+	}
+	if b.SW != (LatLng{Lat: -5, Lng: -15}) {
+		t.Errorf("SW = %+v, want {-5, -15}", b.SW)
+	}
+}
+
+func TestBoundsOf_Empty(t *testing.T) {
+	if !BoundsOf().IsZero() {
+		t.Error("BoundsOf() with no points should be zero")
+	}
+}
+
+// BoundsOf with a single point must return a degenerate box at that
+// point — callers (e.g. Marker.Bounds) rely on it.
+func TestBoundsOf_SinglePoint(t *testing.T) {
+	p := LatLng{Lat: 47.6, Lng: -122.3}
+	b := BoundsOf(p)
+	// Clamp's math.Mod introduces sub-ULP drift on Lng; compare with
+	// tolerance rather than direct equality.
+	if !approxEq(b.NE.Lat, p.Lat) || !approxEq(b.NE.Lng, p.Lng) ||
+		!approxEq(b.SW.Lat, p.Lat) || !approxEq(b.SW.Lng, p.Lng) {
+		t.Errorf("BoundsOf(p) = %+v, want degenerate at %+v", b, p)
+	}
+}
+
+func TestBounds_Center(t *testing.T) {
+	b := Bounds{
+		NE: LatLng{Lat: 10, Lng: 20},
+		SW: LatLng{Lat: -2, Lng: 6},
+	}
+	c := b.Center()
+	if c.Lat != 4 || c.Lng != 13 {
+		t.Errorf("Center = %+v, want {4, 13}", c)
+	}
+}
+
+// Extend must preserve existing corners when the new point lies
+// strictly inside the box — a regression swapping < for <= could
+// shrink the box silently.
+func TestBounds_Extend_PropagatesExistingCorners(t *testing.T) {
+	b := Bounds{
+		NE: LatLng{Lat: 10, Lng: 20},
+		SW: LatLng{Lat: -10, Lng: -20},
+	}
+	got := b.Extend(LatLng{Lat: 1, Lng: 2})
+	if got != b {
+		t.Errorf("Extend on inside-point changed b: got %+v, want %+v", got, b)
+	}
+}
+
 // Latitudes outside the Web Mercator range must be pinned to the
 // representable extreme, not silently passed through.
 func TestClamp_LatAboveMercatorClamps(t *testing.T) {

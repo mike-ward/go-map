@@ -19,8 +19,8 @@ func TestComputeViewport_ZoomZero(t *testing.T) {
 		Center: projection.LatLng{Lat: 0, Lng: 0},
 		Zoom:   0,
 	})
-	if vp.Zoom != 0 {
-		t.Fatalf("Zoom = %d, want 0", vp.Zoom)
+	if vp.Z != 0 {
+		t.Fatalf("Zoom = %d, want 0", vp.Z)
 	}
 	if math.Abs(float64(vp.OriginX-28)) > 1e-3 ||
 		math.Abs(float64(vp.OriginY-28)) > 1e-3 {
@@ -132,7 +132,7 @@ func TestViewport_AntimeridianRange(t *testing.T) {
 		Center: projection.LatLng{Lat: 0, Lng: 179.9},
 		Zoom:   2,
 	})
-	maxN := int32(1) << vp.Zoom // 4
+	maxN := int32(1) << vp.Z // 4
 	seenWraps := false
 	for tx := vp.MinTX; tx <= vp.MaxTX; tx++ {
 		if tx < 0 || tx >= maxN {

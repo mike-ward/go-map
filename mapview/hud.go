@@ -55,7 +55,7 @@ func drawCoordReadout(dc *gui.DrawContext, vp viewport, s MapState, h hoverState
 	if h.Valid {
 		ll = vp.screenToLatLng(h.X, h.Y)
 	}
-	text := fmt.Sprintf("z%d  %7.4f°, %8.4f°", vp.Zoom, ll.Lat, ll.Lng)
+	text := fmt.Sprintf("z%d  %7.4f°, %8.4f°", vp.Z, ll.Lat, ll.Lng)
 	w, ch := chipMetrics(dc, text, hudStyle)
 	drawHUDChip(dc, 4, dc.Height-ch-4, w, ch, text, hudStyle)
 }

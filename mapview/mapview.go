@@ -39,6 +39,12 @@ type Cfg struct {
 	InitialCenter projection.LatLng
 	InitialZoom   uint32
 
+	// InitialOverlays seed the overlay registry on the first frame
+	// only; subsequent frames read from the registry. Authors wanting
+	// to add/remove overlays after first render call AddOverlay /
+	// RemoveOverlay from event callbacks.
+	InitialOverlays []Overlay
+
 	// Data
 	Source tile.Source
 
@@ -55,6 +61,13 @@ type Cfg struct {
 	// callback.
 	OnMove       func(*gui.Window, MapState)
 	OnZoomChange func(*gui.Window, uint32)
+	// OnClick fires on a mouse-down / mouse-up pair that did not drag
+	// past dragThresholdPx. The LatLng is the projected position of
+	// the up-point. If the click hits an overlay, OnPOISelect runs
+	// first; OnClick still fires after (authors can discriminate via
+	// the overlay callback).
+	OnClick     func(*gui.Window, projection.LatLng)
+	OnPOISelect func(*gui.Window, Overlay)
 }
 
 // fireDecision is the pure-function core of fireCallbacks. Returns
@@ -115,6 +128,11 @@ func Map(cfg Cfg) gui.View {
 		cfg.InitialZoom = maxZoom
 	}
 	cfg.InitialCenter = cfg.InitialCenter.Clamp()
+	for _, o := range cfg.InitialOverlays {
+		if o == nil || o.ID() == "" {
+			panic("mapview: InitialOverlays entry missing non-empty ID")
+		}
+	}
 	return &mapView{cfg: cfg}
 }
 
@@ -136,6 +154,7 @@ func (mv *mapView) GenerateLayout(w *gui.Window) gui.Layout {
 		Zoom:   c.InitialZoom,
 	}
 	s := readState(w, c.ID, seed)
+	seedOverlaysOnce(w, c)
 
 	// Fire delta-driven callbacks before the draw closure captures
 	// state. Skip the first frame so consumers do not see a synthetic
@@ -144,12 +163,16 @@ func (mv *mapView) GenerateLayout(w *gui.Window) gui.Layout {
 
 	// Capture state by value into the OnDraw closure. Reads happen
 	// here (on the UI goroutine) so the draw pass never touches the
-	// registry — keeping OnDraw allocation-free.
+	// registry. The overlay map is shared by reference — mutations
+	// happen through event callbacks that run between frames, never
+	// during OnDraw, so no snapshot copy is required.
 	src := c.Source
 	hover := nsRead[hoverState](w, nsHover, c.ID)
+	overlays := readOverlays(w, c.ID)
 	onDraw := func(dc *gui.DrawContext) {
 		vp := computeViewport(dc.Width, dc.Height, s)
 		drawTiles(dc, vp, src)
+		drawOverlays(dc, vp, overlays)
 		drawScaleBar(dc, s)
 		drawCoordReadout(dc, vp, s, hover)
 		drawZoomIndicator(dc, s.Zoom)
@@ -178,11 +201,77 @@ func (mv *mapView) GenerateLayout(w *gui.Window) gui.Layout {
 		Color:           c.Background,
 		Clip:            true,
 		OnDraw:          onDraw,
-		OnClick:         onClick(c.ID, seed),
+		OnClick:         onMouseDown(c, seed),
 		OnMouseScroll:   onMouseScroll(c.ID, c.Source),
 		OnMouseMove:     onMouseMove(c.ID),
 		OnMouseLeave:    onMouseLeave(c.ID),
 		OnKeyDown:       onKeyDown(c.ID, c.Source, seed),
 	})
 	return inner.GenerateLayout(w)
+}
+
+// seedOverlaysOnce seeds Cfg.InitialOverlays on the first frame only.
+// The nsSeeded flag fires unconditionally after the first render so an
+// immediate-mode consumer that starts with an empty InitialOverlays
+// and populates it on a later frame cannot trigger a delayed reseed.
+func seedOverlaysOnce(w *gui.Window, c Cfg) {
+	if nsRead[bool](w, nsSeeded, c.ID) {
+		return
+	}
+	if len(c.InitialOverlays) > 0 {
+		m := readOverlays(w, c.ID)
+		for _, o := range c.InitialOverlays {
+			m[o.ID()] = o
+		}
+	}
+	nsWrite(w, nsSeeded, c.ID, true)
+}
+
+// drawOverlays renders each overlay whose projected bounding box
+// intersects the canvas. Culling runs in world-pixel space at the
+// current zoom — lat/lng culling breaks on antimeridian-straddling
+// viewports, where Unproject returns raw lng > 180 that no longer
+// compares against clamped overlay longitudes. The X test is applied
+// at three world shifts (0, ±worldSize) so a wrapping viewport still
+// finds the correct overlays. Map iteration order is random; overlays
+// at the same screen position z-order nondeterministically across
+// frames — locked down when the spatial index lands in v0.3.
+func drawOverlays(dc *gui.DrawContext, vp viewport, overlays overlayMap) {
+	if len(overlays) == 0 {
+		return
+	}
+	worldPx := projection.WorldSize(vp.Z)
+	minX := float64(vp.OriginX)
+	maxX := float64(vp.OriginX + vp.W)
+	minY := float64(vp.OriginY)
+	maxY := float64(vp.OriginY + vp.H)
+	for _, o := range overlays {
+		if !overlayVisible(o, vp.Z, worldPx, minX, maxX, minY, maxY) {
+			continue
+		}
+		o.Draw(dc, vp)
+	}
+}
+
+// overlayVisible is the culling predicate for drawOverlays. Pure
+// function — no DrawContext, no state registry — so the antimeridian
+// logic can be unit-tested directly.
+func overlayVisible(o Overlay, z uint32, worldPx, minX, maxX, minY, maxY float64) bool {
+	b := o.Bounds()
+	ne := projection.Project(b.NE, z)
+	sw := projection.Project(b.SW, z)
+	oMinX, oMaxX := sw.X, ne.X
+	oMinY, oMaxY := ne.Y, sw.Y
+	if oMaxY < minY || oMinY > maxY {
+		return false
+	}
+	// Viewport X can exceed [0, worldPx) when the user has panned
+	// across the antimeridian. Accept a match at any integer world
+	// shift in {-1, 0, +1}; tiles.go does the same for tile pulls.
+	for _, shift := range [3]float64{0, worldPx, -worldPx} {
+		if oMaxX+shift >= minX && oMinX+shift <= maxX {
+			return true
+		}
+	}
+	return false
 }

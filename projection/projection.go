@@ -17,6 +17,62 @@ type Point struct {
 	X, Y float64
 }
 
+// Bounds is an axis-aligned latitude/longitude box. NE must hold the
+// larger latitude and (naïvely) the larger longitude — antimeridian-
+// straddling boxes are not supported in this type; callers that need
+// them should represent the crossing with two Bounds.
+type Bounds struct {
+	NE, SW LatLng
+}
+
+// Extend returns the smallest Bounds containing both b and p. Callers
+// must seed b with a valid point (use BoundsOf); extending a zero
+// Bounds would silently stretch the box down to (0, 0) on the next
+// point, dropping the real extent for polylines whose first vertex is
+// exactly (0, 0).
+func (b Bounds) Extend(p LatLng) Bounds {
+	p = p.Clamp()
+	if p.Lat > b.NE.Lat {
+		b.NE.Lat = p.Lat
+	}
+	if p.Lat < b.SW.Lat {
+		b.SW.Lat = p.Lat
+	}
+	if p.Lng > b.NE.Lng {
+		b.NE.Lng = p.Lng
+	}
+	if p.Lng < b.SW.Lng {
+		b.SW.Lng = p.Lng
+	}
+	return b
+}
+
+// BoundsOf returns the smallest Bounds containing every supplied
+// point. Zero-length input returns a zero Bounds (callers that care
+// should check IsZero).
+func BoundsOf(points ...LatLng) Bounds {
+	if len(points) == 0 {
+		return Bounds{}
+	}
+	p0 := points[0].Clamp()
+	b := Bounds{NE: p0, SW: p0}
+	for _, p := range points[1:] {
+		b = b.Extend(p)
+	}
+	return b
+}
+
+// Center returns the midpoint of the bounds.
+func (b Bounds) Center() LatLng {
+	return LatLng{
+		Lat: (b.NE.Lat + b.SW.Lat) / 2,
+		Lng: (b.NE.Lng + b.SW.Lng) / 2,
+	}
+}
+
+// IsZero reports whether b is the zero value.
+func (b Bounds) IsZero() bool { return b == Bounds{} }
+
 // TileSize is the fixed pixel edge length of a slippy tile.
 const TileSize = 256
 
