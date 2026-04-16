@@ -37,6 +37,13 @@ type Source interface {
 	// owns the returned slice.
 	Fetch(ctx context.Context, c Coord) ([]byte, error)
 
+	// URL returns a string the rendering layer can pass to
+	// gui.DrawContext.Image. For HTTP sources this is the tile URL;
+	// for future offline sources it may be a data: URL or a local
+	// path. Empty string means the Source cannot render through the
+	// URL path and the caller must use Fetch instead.
+	URL(c Coord) string
+
 	// Attribution returns a short, human-readable credit string to be
 	// rendered by the map widget. Required by most tile providers.
 	Attribution() string

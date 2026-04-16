@@ -2,7 +2,7 @@ module github.com/mike-ward/go-map
 
 go 1.26.0
 
-require github.com/mike-ward/go-gui v0.12.0
+require github.com/mike-ward/go-gui v0.12.2
 
 require (
 	github.com/alecthomas/chroma/v2 v2.23.1 // indirect

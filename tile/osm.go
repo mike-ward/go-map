@@ -35,6 +35,13 @@ func OSMWithUserAgent(ua string) Source {
 	}
 }
 
+func (s *osmSource) URL(c Coord) string {
+	if !c.Valid() {
+		return ""
+	}
+	return fmt.Sprintf(s.urlTpl, c.Z, c.X, c.Y)
+}
+
 func (s *osmSource) Fetch(ctx context.Context, c Coord) ([]byte, error) {
 	if !c.Valid() {
 		return nil, ErrNotFound
@@ -65,3 +72,26 @@ func (s *osmSource) Attribution() string {
 }
 
 func (*osmSource) MaxZoom() uint32 { return 19 }
+
+// HTTPFetcher returns a function suitable for
+// gui.WindowCfg.ImageFetcher. It sends the Source's User-Agent on
+// every request — required by OSM tile policy when rendering via
+// gui.DrawContext.Image. Sources that are not HTTP-backed return
+// nil; the caller falls back to go-gui's default fetcher.
+func (s *osmSource) HTTPFetcher() func(ctx context.Context, url string) (*http.Response, error) {
+	return func(ctx context.Context, url string) (*http.Response, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("User-Agent", s.userAgent)
+		return s.client.Do(req)
+	}
+}
+
+// HTTPFetcher is implemented by Sources that speak HTTP and can
+// supply a policy-compliant fetcher for gui.WindowCfg.ImageFetcher.
+// Consumers type-assert to this interface.
+type HTTPFetcher interface {
+	HTTPFetcher() func(ctx context.Context, url string) (*http.Response, error)
+}
