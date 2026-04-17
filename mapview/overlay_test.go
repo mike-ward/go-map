@@ -751,3 +751,268 @@ func TestOnMouseDown_PopupRectConsumesClick(t *testing.T) {
 		t.Fatal("popup hit must not start a pan")
 	}
 }
+
+// TestOnMouseDown_CloseButtonDismissesPopup: a mouse-down inside the
+// close-button rect flips InfoOpen off and consumes the event without
+// starting a drag. Close is prioritised over body, so a press in the
+// close region never falls through to infoHitBody.
+func TestOnMouseDown_CloseButtonDismissesPopup(t *testing.T) {
+	w := &gui.Window{}
+	id := "m"
+	seed := MapState{Center: projection.LatLng{Lat: 0, Lng: 0}, Zoom: 2}
+	readState(w, id, MapState{
+		Center: seed.Center, Zoom: seed.Zoom,
+		FocusedOverlayID: "titled", InfoOpen: true,
+	})
+	nsWrite(w, nsInfoRect, id, infoRectState{
+		X: 30, Y: 30, W: 100, H: 40,
+		CloseX: 110, CloseY: 34, CloseW: 16, CloseH: 16,
+		MarkerID: "titled", Valid: true,
+	})
+	e := &gui.Event{MouseX: 115, MouseY: 40}
+	onMouseDown(Cfg{ID: id}, seed)(&gui.Layout{
+		Shape: &gui.Shape{Width: 400, Height: 300},
+	}, e, w)
+	if !e.IsHandled {
+		t.Fatal("close-button press must mark event handled")
+	}
+	if p := nsRead[panState](w, nsPan, id); p.Active {
+		t.Fatal("close-button press must not start a pan")
+	}
+	s, _ := Snapshot(w, id)
+	if s.InfoOpen {
+		t.Fatal("close-button press must flip InfoOpen to false")
+	}
+}
+
+// TestOnMouseDown_ActionButtonFiresCallbackAndCloses: a mouse-down
+// inside an action button rect invokes the action's OnClick with the
+// owning Window and closes the popup *before* the callback runs, so
+// an OnClick that reads Snapshot sees InfoOpen=false.
+func TestOnMouseDown_ActionButtonFiresCallbackAndCloses(t *testing.T) {
+	w := &gui.Window{}
+	id := "m"
+	seed := MapState{Center: projection.LatLng{Lat: 0, Lng: 0}, Zoom: 2}
+	readState(w, id, MapState{
+		Center: seed.Center, Zoom: seed.Zoom,
+		FocusedOverlayID: "titled", InfoOpen: true,
+	})
+	var (
+		fired        bool
+		seenInfoOpen bool
+	)
+	AddOverlay(w, id, &Marker{
+		MarkerID: "titled",
+		Pos:      projection.LatLng{Lat: 0, Lng: 0},
+		Title:    "Hello",
+		Actions: []InfoWindowAction{
+			{Label: "Go", OnClick: func(cbW *gui.Window) {
+				fired = true
+				s, _ := Snapshot(cbW, id)
+				seenInfoOpen = s.InfoOpen
+			}},
+		},
+	})
+	var actions [MaxInfoActions]infoActionRect
+	actions[0] = infoActionRect{X: 40, Y: 60, W: 30, H: 20}
+	nsWrite(w, nsInfoRect, id, infoRectState{
+		X: 30, Y: 30, W: 100, H: 60,
+		Actions: actions, ActionCount: 1,
+		MarkerID: "titled", Valid: true,
+	})
+	e := &gui.Event{MouseX: 50, MouseY: 70}
+	onMouseDown(Cfg{ID: id}, seed)(&gui.Layout{
+		Shape: &gui.Shape{Width: 400, Height: 300},
+	}, e, w)
+	if !e.IsHandled {
+		t.Fatal("action press must mark event handled")
+	}
+	if !fired {
+		t.Fatal("action OnClick must fire on press")
+	}
+	if seenInfoOpen {
+		t.Fatal("popup must close before action callback runs")
+	}
+}
+
+// TestOnMouseDown_ActionDispatchTolerates_StaleMarker: if the Marker
+// was removed between the frame that rendered the popup and the click
+// event, action dispatch must not panic. Popup still closes.
+func TestOnMouseDown_ActionDispatchTolerates_StaleMarker(t *testing.T) {
+	w := &gui.Window{}
+	id := "m"
+	seed := MapState{Center: projection.LatLng{Lat: 0, Lng: 0}, Zoom: 2}
+	readState(w, id, MapState{
+		Center: seed.Center, Zoom: seed.Zoom,
+		FocusedOverlayID: "ghost", InfoOpen: true,
+	})
+	var actions [MaxInfoActions]infoActionRect
+	actions[0] = infoActionRect{X: 40, Y: 60, W: 30, H: 20}
+	nsWrite(w, nsInfoRect, id, infoRectState{
+		X: 30, Y: 30, W: 100, H: 60,
+		Actions: actions, ActionCount: 1,
+		MarkerID: "ghost", Valid: true,
+	})
+	e := &gui.Event{MouseX: 50, MouseY: 70}
+	onMouseDown(Cfg{ID: id}, seed)(&gui.Layout{
+		Shape: &gui.Shape{Width: 400, Height: 300},
+	}, e, w)
+	if !e.IsHandled {
+		t.Fatal("stale action press must still consume event")
+	}
+	if s, _ := Snapshot(w, id); s.InfoOpen {
+		t.Fatal("stale action press must still close popup")
+	}
+}
+
+// TestPanDragEnd_ClickOutsideDismissesPopup: a click that lands on
+// empty canvas (no overlay hit) with a popup open closes the popup —
+// the "click outside" gesture listed alongside Escape and the close
+// button. Focus stays on the previously-focused marker so a
+// subsequent Tab continues from there.
+func TestPanDragEnd_ClickOutsideDismissesPopup(t *testing.T) {
+	w := &gui.Window{}
+	id := "m"
+	center := projection.LatLng{Lat: 45, Lng: -122}
+	readState(w, id, MapState{
+		Center: center, Zoom: 10,
+		FocusedOverlayID: "titled", InfoOpen: true,
+	})
+	AddOverlay(w, id, &Marker{
+		MarkerID: "titled",
+		Pos:      projection.LatLng{Lat: 46, Lng: -121}, // far from click
+		Title:    "Hello",
+	})
+	canvasW, canvasH := float32(200), float32(200)
+	cx, cy := canvasW/2, canvasH/2
+	nsWrite(w, nsPan, id, panState{
+		Active: true, Moved: false,
+		StartX: cx, StartY: cy, LocalX: cx, LocalY: cy,
+		CanvasW: canvasW, CanvasH: canvasH,
+	})
+	panDragEnd(Cfg{ID: id})(nil, &gui.Event{MouseX: cx, MouseY: cy}, w)
+
+	got, _ := Snapshot(w, id)
+	if got.InfoOpen {
+		t.Fatal("empty-canvas click must dismiss popup")
+	}
+	if got.FocusedOverlayID != "titled" {
+		t.Errorf("focus should persist after dismiss, got %q",
+			got.FocusedOverlayID)
+	}
+}
+
+// TestInfoRectHit_ClampsInflatedActionCount: a corrupt state-registry
+// entry (struct-layout drift, stale read across a refactor) with
+// ActionCount greater than the Actions array capacity must not OOB
+// the fixed-size array. hit() clamps the loop bound to MaxInfoActions;
+// this is the regression guard for that clamp.
+func TestInfoRectHit_ClampsInflatedActionCount(t *testing.T) {
+	// Fill every action slot with a rect the hit point is inside, so
+	// a correct clamp still returns infoHitAction (index 0, the first
+	// slot iterated). A dropped clamp would read past the array and
+	// panic; surviving the call is itself the assertion.
+	var actions [MaxInfoActions]infoActionRect
+	for i := range actions {
+		actions[i] = infoActionRect{X: 0, Y: 0, W: 100, H: 100}
+	}
+	r := infoRectState{
+		X: 0, Y: 0, W: 100, H: 100,
+		Actions:     actions,
+		ActionCount: 999, // well past MaxInfoActions
+		Valid:       true,
+	}
+	got := r.hit(10, 10)
+	if got.Kind != infoHitAction || got.Index != 0 {
+		t.Errorf("inflated ActionCount: got %+v, want first action hit", got)
+	}
+}
+
+// TestPanDragEnd_PolylineClickLeavesPopupOpen: clicking a non-marker
+// overlay (Polyline here) with a popup open must NOT dismiss it. The
+// popup is anchored to a focused Marker; polygon / polyline / circle
+// clicks are a separate interaction. Regression guard for the
+// deliberate `if marker-hit { ... } else if hit == nil { ... }` chain
+// in panDragEnd — a refactor that collapses the non-marker case into
+// the dismissal branch would silently change contract.
+func TestPanDragEnd_PolylineClickLeavesPopupOpen(t *testing.T) {
+	w := &gui.Window{}
+	id := "m"
+	center := projection.LatLng{Lat: 45, Lng: -122}
+	readState(w, id, MapState{
+		Center: center, Zoom: 10,
+		FocusedOverlayID: "titled", InfoOpen: true,
+	})
+	// Focused marker sits far away so it is not the hit; the popup is
+	// open for it purely because the state says so.
+	AddOverlay(w, id, &Marker{
+		MarkerID: "titled",
+		Pos:      projection.LatLng{Lat: 46, Lng: -121},
+		Title:    "Hello",
+	})
+	// Horizontal polyline through the viewport center. Two points a
+	// degree apart in longitude at the same latitude as the map center
+	// yield a segment running through the click point in screen space.
+	AddOverlay(w, id, &Polyline{
+		LineID: "road",
+		Points: []projection.LatLng{
+			{Lat: 45, Lng: -123},
+			{Lat: 45, Lng: -121},
+		},
+		StrokeWidth: 2,
+	})
+	canvasW, canvasH := float32(200), float32(200)
+	cx, cy := canvasW/2, canvasH/2
+	nsWrite(w, nsPan, id, panState{
+		Active: true, Moved: false,
+		StartX: cx, StartY: cy, LocalX: cx, LocalY: cy,
+		CanvasW: canvasW, CanvasH: canvasH,
+	})
+
+	// OnPOISelect confirms the polyline was indeed the hit target —
+	// otherwise the test would silently pass through the hit==nil
+	// branch and become a duplicate of the click-outside test.
+	var selected Overlay
+	c := Cfg{
+		ID:          id,
+		OnPOISelect: func(_ *gui.Window, o Overlay) { selected = o },
+	}
+	panDragEnd(c)(nil, &gui.Event{MouseX: cx, MouseY: cy}, w)
+
+	if _, ok := selected.(*Polyline); !ok {
+		t.Fatalf("polyline must be the hit target, got %T", selected)
+	}
+	got, _ := Snapshot(w, id)
+	if !got.InfoOpen {
+		t.Error("polyline click must not dismiss popup")
+	}
+	if got.FocusedOverlayID != "titled" {
+		t.Errorf("focus must persist, got %q", got.FocusedOverlayID)
+	}
+}
+
+// TestInfoRectHit_Priority: close button wins over body at the same
+// coord; an action rect wins over body; outside every rect misses.
+// Ensures close/action regions are never shadowed by the body fill.
+func TestInfoRectHit_Priority(t *testing.T) {
+	var actions [MaxInfoActions]infoActionRect
+	actions[0] = infoActionRect{X: 40, Y: 60, W: 30, H: 20}
+	r := infoRectState{
+		X: 30, Y: 30, W: 100, H: 60,
+		CloseX: 110, CloseY: 34, CloseW: 16, CloseH: 16,
+		Actions: actions, ActionCount: 1,
+		Valid: true,
+	}
+	if got := r.hit(115, 40); got.Kind != infoHitClose {
+		t.Errorf("close should win over body: %v", got.Kind)
+	}
+	if got := r.hit(50, 70); got.Kind != infoHitAction || got.Index != 0 {
+		t.Errorf("action should win over body: %+v", got)
+	}
+	if got := r.hit(50, 45); got.Kind != infoHitBody {
+		t.Errorf("body hit expected: %v", got.Kind)
+	}
+	if got := r.hit(200, 200); got.Kind != infoHitMiss {
+		t.Errorf("outside-rect miss expected: %v", got.Kind)
+	}
+}

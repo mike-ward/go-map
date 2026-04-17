@@ -307,34 +307,36 @@ func TestMarkerA11YText_TruncatesLongFields(t *testing.T) {
 // at the top-left corner hit (half-open convention includes origin);
 // coords exactly at the bottom-right corner miss (half-open excludes
 // far edge); NaN coords never hit (safe-by-default for float compares).
+// Tests only the body rect here (no close, no actions) — close/action
+// priority and multi-rect dispatch live in TestInfoRectHit_Priority.
 func TestInfoRectHit_Boundaries(t *testing.T) {
 	r := infoRectState{X: 10, Y: 20, W: 100, H: 40, Valid: true}
 	cases := []struct {
 		name   string
 		px, py float32
-		want   bool
+		want   infoHitKind
 	}{
-		{"inside", 50, 30, true},
-		{"top_left_corner_inclusive", 10, 20, true},
-		{"bottom_right_corner_exclusive", 110, 60, false},
-		{"right_edge_excluded", 110, 30, false},
-		{"bottom_edge_excluded", 50, 60, false},
-		{"left_of_rect", 9, 30, false},
-		{"above_rect", 50, 19, false},
-		{"nan_x", float32(math.NaN()), 30, false},
-		{"nan_y", 50, float32(math.NaN()), false},
+		{"inside", 50, 30, infoHitBody},
+		{"top_left_corner_inclusive", 10, 20, infoHitBody},
+		{"bottom_right_corner_exclusive", 110, 60, infoHitMiss},
+		{"right_edge_excluded", 110, 30, infoHitMiss},
+		{"bottom_edge_excluded", 50, 60, infoHitMiss},
+		{"left_of_rect", 9, 30, infoHitMiss},
+		{"above_rect", 50, 19, infoHitMiss},
+		{"nan_x", float32(math.NaN()), 30, infoHitMiss},
+		{"nan_y", 50, float32(math.NaN()), infoHitMiss},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := r.hit(c.px, c.py); got != c.want {
-				t.Fatalf("got %v want %v", got, c.want)
+			if got := r.hit(c.px, c.py); got.Kind != c.want {
+				t.Fatalf("got %v want %v", got.Kind, c.want)
 			}
 		})
 	}
-	if (infoRectState{}).hit(0, 0) {
+	if (infoRectState{}).hit(0, 0).Kind != infoHitMiss {
 		t.Fatal("Valid=false must never hit")
 	}
-	if (infoRectState{X: 10, Y: 10, W: 10, H: 10}).hit(15, 15) {
+	if (infoRectState{X: 10, Y: 10, W: 10, H: 10}).hit(15, 15).Kind != infoHitMiss {
 		t.Fatal("Valid=false (with non-zero geometry) must never hit")
 	}
 }

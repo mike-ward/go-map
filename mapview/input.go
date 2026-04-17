@@ -23,8 +23,7 @@ func onMouseDown(c Cfg, seed MapState) func(*gui.Layout, *gui.Event, *gui.Window
 		// Popup-rect hit-test runs first so a click on the InfoWindow
 		// body neither starts a drag-pan nor falls through to an
 		// overlay beneath the popup. No-op when no popup is drawn.
-		if nsRead[infoRectState](w, nsInfoRect, id).hit(e.MouseX, e.MouseY) {
-			e.IsHandled = true
+		if handlePopupClick(w, id, e) {
 			return
 		}
 		if homeButtonHit(l.Shape.Width, e.MouseX, e.MouseY) {
@@ -54,6 +53,74 @@ func onMouseDown(c Cfg, seed MapState) func(*gui.Layout, *gui.Event, *gui.Window
 		})
 		e.IsHandled = true
 	}
+}
+
+// handlePopupClick consumes a mouse-down that landed on the InfoWindow
+// popup. Close-button and action-button hits dispatch on press
+// (matching the Home button) so no drag-tracking is started; the
+// state write to close the popup fires *before* any action callback so
+// an OnClick that reads Snapshot sees InfoOpen=false. Returns true when
+// the event was consumed (body hits, close, action); false means no
+// popup is drawn or the press was outside the popup rect — caller
+// continues with its normal handling.
+func handlePopupClick(w *gui.Window, id string, e *gui.Event) bool {
+	rect := nsRead[infoRectState](w, nsInfoRect, id)
+	h := rect.hit(e.MouseX, e.MouseY)
+	switch h.Kind {
+	case infoHitMiss:
+		return false
+	case infoHitBody:
+		e.IsHandled = true
+		return true
+	case infoHitClose:
+		closeInfoPopup(w, id)
+		e.IsHandled = true
+		return true
+	case infoHitAction:
+		m := markerByID(w, id, rect.MarkerID)
+		closeInfoPopup(w, id)
+		// Belt-and-suspenders bounds: hit() already clamps against
+		// MaxInfoActions, but re-checking here means a future refactor
+		// of either side cannot drive an OOB index on Marker.Actions.
+		if m != nil && h.Index >= 0 && h.Index < MaxInfoActions &&
+			h.Index < len(m.Actions) {
+			if cb := m.Actions[h.Index].OnClick; cb != nil {
+				cb(w)
+			}
+		}
+		e.IsHandled = true
+		return true
+	}
+	return false
+}
+
+// closeInfoPopup flips InfoOpen off on the map state. No-op when the
+// popup is already closed so a second close press on a race does not
+// dirty the state map.
+func closeInfoPopup(w *gui.Window, id string) {
+	s := nsRead[MapState](w, nsState, id)
+	if !s.InfoOpen {
+		return
+	}
+	s.InfoOpen = false
+	nsWrite(w, nsState, id, s)
+}
+
+// markerByID fetches the Marker overlay with the given overlay-ID,
+// returning nil when absent or when the overlay is not a Marker. Used
+// by action dispatch to re-resolve the callback at press time — the
+// overlay map may have changed between the frame that rendered the
+// popup and the frame that delivered the click.
+func markerByID(w *gui.Window, id, markerID string) *Marker {
+	if markerID == "" {
+		return nil
+	}
+	o, ok := readOverlays(w, id).Get(markerID)
+	if !ok {
+		return nil
+	}
+	m, _ := o.(*Marker)
+	return m
 }
 
 func homeButtonHit(canvasW, mx, my float32) bool {
@@ -137,9 +204,13 @@ func panDragEnd(c Cfg) func(*gui.Layout, *gui.Event, *gui.Window) {
 		// A marker hit is also a focus event: the clicked marker
 		// becomes keyboard-focused and its InfoWindow opens (when
 		// Title is set). Mirrors the Enter-on-focused-marker path so
-		// click and keyboard converge on the same popup state. Skip
-		// the write when nothing changed — a second click on the
-		// already-focused marker should not thrash the state map.
+		// click and keyboard converge on the same popup state. A
+		// click into empty space (no overlay under the release) with
+		// a popup open dismisses the popup — matches the "click
+		// outside" gesture the plan lists alongside Escape and the
+		// close button. Skip the write when nothing changed so a
+		// second click on the already-focused marker, or an idle
+		// click over empty water, never thrashes the state map.
 		if m, ok := hit.(*Marker); ok {
 			wantOpen := s.InfoOpen
 			if m.Title != "" {
@@ -150,6 +221,9 @@ func panDragEnd(c Cfg) func(*gui.Layout, *gui.Event, *gui.Window) {
 				s.InfoOpen = wantOpen
 				nsWrite(w, nsState, id, s)
 			}
+		} else if hit == nil && s.InfoOpen {
+			s.InfoOpen = false
+			nsWrite(w, nsState, id, s)
 		}
 		if hit != nil && c.OnPOISelect != nil {
 			c.OnPOISelect(w, hit)

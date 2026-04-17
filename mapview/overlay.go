@@ -77,6 +77,23 @@ func colorOr(c, fallback gui.Color) gui.Color {
 	return fallback
 }
 
+// MaxInfoActions bounds the number of action buttons rendered per
+// InfoWindow. The cap lets infoRectState stay a plain comparable struct
+// (fixed-size array) so the per-frame rect-write skip guard in
+// drawFocus keeps working; Go slices aren't comparable. Excess entries
+// beyond the cap are silently dropped at draw time.
+const MaxInfoActions = 4
+
+// InfoWindowAction is a labelled button rendered at the bottom of the
+// popup for a focused Marker. OnClick fires on mouse-down (matching the
+// Home button) and receives the owning Window so callbacks can mutate
+// state via PanTo / AddOverlay / etc. The popup closes before the
+// callback runs, so a callback that reads Snapshot sees InfoOpen=false.
+type InfoWindowAction struct {
+	Label   string
+	OnClick func(*gui.Window)
+}
+
 // Marker is a point overlay rendered as a pin glyph. Label is required
 // for accessibility; OnClick is optional and, if set, causes marker
 // clicks to fire through the map's OnPOISelect callback first and then
@@ -85,7 +102,8 @@ func colorOr(c, fallback gui.Color) gui.Color {
 // Title and Body feed the InfoWindow popup opened by Enter on a
 // keyboard-focused marker (or by a future programmatic hook). Empty
 // Title suppresses the popup entirely; the focus ring still draws so
-// decorative markers remain reachable via Tab.
+// decorative markers remain reachable via Tab. Actions render as
+// buttons below Body; entries past MaxInfoActions are dropped.
 type Marker struct {
 	MarkerID string
 	Pos      projection.LatLng
@@ -94,6 +112,7 @@ type Marker struct {
 	Body     string
 	Color    gui.Color
 	OnClick  func(*gui.Window)
+	Actions  []InfoWindowAction
 }
 
 // ID returns the marker's stable key.

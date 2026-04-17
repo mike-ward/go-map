@@ -68,6 +68,14 @@ func view(w *gui.Window) gui.View {
 						Label:    "Seattle",
 						Title:    "Seattle, WA",
 						Body:     "Pacific Northwest coffee capital.",
+						Actions: []mapview.InfoWindowAction{
+							{Label: "Zoom in", OnClick: func(w *gui.Window) {
+								mapview.SetView(w, mapID, cities[0].Center, 14)
+							}},
+							{Label: "Reset", OnClick: func(w *gui.Window) {
+								mapview.SetView(w, mapID, cities[0].Center, cities[0].Zoom)
+							}},
+						},
 					},
 					&mapview.Marker{
 						MarkerID: "london",
