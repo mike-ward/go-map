@@ -137,14 +137,14 @@ func TestHandleFocusKey_EnterNoMarkersDoesNotConsume(t *testing.T) {
 	}
 }
 
-// TestHandleFocusKey_TabCycles: Tab walks forward, Shift-Tab walks
-// back, both wrap, and neither opens the popup.
+// TestHandleFocusKey_TabCycles: with the popup closed, Tab walks
+// forward through markers, Shift-Tab walks back, both wrap.
 func TestHandleFocusKey_TabCycles(t *testing.T) {
 	w := &gui.Window{}
 	for _, id := range []string{"a", "b", "c"} {
 		AddOverlay(w, "m", &Marker{MarkerID: id, Title: id})
 	}
-	s := MapState{FocusedOverlayID: "a", InfoOpen: true}
+	s := MapState{FocusedOverlayID: "a"}
 
 	cases := []struct {
 		name string
@@ -160,7 +160,7 @@ func TestHandleFocusKey_TabCycles(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			s.FocusedOverlayID = c.from
-			s.InfoOpen = true
+			s.InfoOpen = false
 			if !handleFocusKey(Cfg{ID: "m"}, &s, c.ev, w) {
 				t.Fatalf("want consumed")
 			}
@@ -168,7 +168,7 @@ func TestHandleFocusKey_TabCycles(t *testing.T) {
 				t.Fatalf("got %q want %q", s.FocusedOverlayID, c.want)
 			}
 			if s.InfoOpen {
-				t.Fatalf("Tab must close InfoOpen")
+				t.Fatalf("marker-cycling Tab must leave InfoOpen unchanged")
 			}
 		})
 	}
@@ -405,5 +405,401 @@ func TestStateForA11Y_IncludesFocusedMarker(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("a11y text missing %q: %q", want, got)
 		}
+	}
+}
+
+// TestStateForA11Y_PopupFocusAnnouncement: focused sub-element text
+// (action label or "Close button") must appear in the announcement so
+// Tab presses produce audible state changes for screen-reader users.
+func TestStateForA11Y_PopupFocusAnnouncement(t *testing.T) {
+	m := &Marker{
+		MarkerID: "pdx",
+		Title:    "Portland",
+		Actions: []InfoWindowAction{
+			{Label: "Zoom in"},
+			{Label: "Reset"},
+		},
+	}
+	base := MapState{FocusedOverlayID: "pdx", InfoOpen: true}
+
+	cases := []struct {
+		name    string
+		idx     int8
+		want    string
+		notWant string
+	}{
+		{"action_0", 0, "Action focused: Zoom in", "Close button focused"},
+		{"action_1", 1, "Action focused: Reset", "Close button focused"},
+		{"close_slot", 2, "Close button focused", "Action focused"},
+		{"stale_out_of_range", 9, "Info window open", "Action focused"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := base
+			s.InfoFocusIndex = c.idx
+			got := stateForA11Y(s, m)
+			if !strings.Contains(got, c.want) {
+				t.Fatalf("missing %q: %q", c.want, got)
+			}
+			if c.notWant != "" && strings.Contains(got, c.notWant) {
+				t.Fatalf("unexpected %q in: %q", c.notWant, got)
+			}
+		})
+	}
+}
+
+// TestCycleInfoFocus: wrap-around across [0, actionCount] where the
+// trailing slot is the close button. Stale indices drifting past the
+// cap snap back into range so the next step lands somewhere sensible.
+func TestCycleInfoFocus(t *testing.T) {
+	cases := []struct {
+		name        string
+		current     int8
+		actionCount int
+		step        int
+		want        int8
+	}{
+		{"forward_first_action", 0, 2, 1, 1},  // action_0 -> action_1
+		{"forward_to_close", 1, 2, 1, 2},      // action_1 -> close
+		{"forward_wrap", 2, 2, 1, 0},          // close -> action_0
+		{"back_wrap", 0, 2, -1, 2},            // action_0 -> close
+		{"back_one", 2, 2, -1, 1},             // close -> action_1
+		{"no_actions_forward", 0, 0, 1, 0},    // close only, wrap to self
+		{"no_actions_back", 0, 0, -1, 0},      // close only, wrap to self
+		{"stale_high_forward", 99, 2, 1, 1},   // clamp to 0, then +1
+		{"stale_negative_back", -5, 2, -1, 2}, // clamp to 0, then -1 wraps
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := cycleInfoFocus(c.current, c.actionCount, c.step); got != c.want {
+				t.Fatalf("got %d want %d", got, c.want)
+			}
+		})
+	}
+}
+
+// TestCycleInfoFocus_ClampsOversizedActionCount: an author-supplied
+// Actions slice longer than MaxInfoActions must not drive the wrap
+// math past int8 range (silent truncation) or land on slots that
+// won't render. Cap semantics match the draw loop.
+func TestCycleInfoFocus_ClampsOversizedActionCount(t *testing.T) {
+	// 200 > MaxInfoActions. After clamp n == MaxInfoActions+1 == 5.
+	// From close (slot == MaxInfoActions) + forward wraps to action_0.
+	got := cycleInfoFocus(int8(MaxInfoActions), 200, 1)
+	if got != 0 {
+		t.Fatalf("forward wrap: got %d want 0", got)
+	}
+	// From action_0 back wraps to the close slot (MaxInfoActions).
+	got = cycleInfoFocus(0, 200, -1)
+	if got != int8(MaxInfoActions) {
+		t.Fatalf("back wrap: got %d want %d", got, MaxInfoActions)
+	}
+	// Negative actionCount collapses to close-only (n=1, wraps in place).
+	if got := cycleInfoFocus(0, -3, 1); got != 0 {
+		t.Fatalf("negative count: got %d want 0", got)
+	}
+}
+
+// TestHandleFocusKey_TabTrapsInPopup: Tab with InfoOpen must cycle the
+// popup sub-element focus and NOT advance to the next marker or close
+// the dialog. This is the core slice-4b contract.
+func TestHandleFocusKey_TabTrapsInPopup(t *testing.T) {
+	w := &gui.Window{}
+	AddOverlay(w, "m", &Marker{
+		MarkerID: "a", Title: "A",
+		Actions: []InfoWindowAction{{Label: "Do"}, {Label: "Undo"}},
+	})
+	AddOverlay(w, "m", &Marker{MarkerID: "b", Title: "B"})
+	s := MapState{FocusedOverlayID: "a", InfoOpen: true, InfoFocusIndex: 0}
+	e := &gui.Event{KeyCode: gui.KeyTab}
+
+	for i, want := range []int8{1, 2, 0, 1} {
+		if !handleFocusKey(Cfg{ID: "m"}, &s, e, w) {
+			t.Fatalf("step %d: want consumed", i)
+		}
+		if s.InfoFocusIndex != want {
+			t.Fatalf("step %d: got idx %d want %d", i, s.InfoFocusIndex, want)
+		}
+		if !s.InfoOpen {
+			t.Fatalf("step %d: Tab must not close popup", i)
+		}
+		if s.FocusedOverlayID != "a" {
+			t.Fatalf("step %d: marker focus must not move, got %q",
+				i, s.FocusedOverlayID)
+		}
+	}
+}
+
+// TestHandleFocusKey_ShiftTabTrapsInPopup: reverse direction through
+// the popup focus cycle.
+func TestHandleFocusKey_ShiftTabTrapsInPopup(t *testing.T) {
+	w := &gui.Window{}
+	AddOverlay(w, "m", &Marker{
+		MarkerID: "a", Title: "A",
+		Actions: []InfoWindowAction{{Label: "Do"}},
+	})
+	s := MapState{FocusedOverlayID: "a", InfoOpen: true, InfoFocusIndex: 0}
+	e := &gui.Event{KeyCode: gui.KeyTab, Modifiers: gui.ModShift}
+
+	// 2 focusables (1 action + close). 0 -> 1 (close) -> 0 (action).
+	for i, want := range []int8{1, 0, 1} {
+		if !handleFocusKey(Cfg{ID: "m"}, &s, e, w) {
+			t.Fatalf("step %d: want consumed", i)
+		}
+		if s.InfoFocusIndex != want {
+			t.Fatalf("step %d: got %d want %d", i, s.InfoFocusIndex, want)
+		}
+	}
+}
+
+// TestHandleFocusKey_TabStaleMarkerDropsPopup: a stale popup (marker
+// removed while dialog was open) closes cleanly on Tab instead of
+// panic-diving through a nil Marker.
+func TestHandleFocusKey_TabStaleMarkerDropsPopup(t *testing.T) {
+	w := &gui.Window{}
+	s := MapState{FocusedOverlayID: "ghost", InfoOpen: true, InfoFocusIndex: 1}
+	e := &gui.Event{KeyCode: gui.KeyTab}
+	if !handleFocusKey(Cfg{ID: "m"}, &s, e, w) {
+		t.Fatalf("want consumed")
+	}
+	if s.InfoOpen || s.InfoFocusIndex != 0 {
+		t.Fatalf("stale popup must reset; got InfoOpen=%v idx=%d",
+			s.InfoOpen, s.InfoFocusIndex)
+	}
+}
+
+// TestHandleFocusKey_EnterActivatesAction: Enter on an action-focused
+// popup fires the callback and closes the dialog. Dispatch order
+// mirrors handlePopupClick — state flips before the callback so a
+// Snapshot read inside the callback sees InfoOpen=false.
+func TestHandleFocusKey_EnterActivatesAction(t *testing.T) {
+	w := &gui.Window{}
+	var fired int
+	var snapOpen bool
+	AddOverlay(w, "m", &Marker{
+		MarkerID: "a", Title: "A",
+		Actions: []InfoWindowAction{
+			{Label: "First", OnClick: func(win *gui.Window) {
+				fired++
+				if sn, ok := Snapshot(win, "m"); ok {
+					snapOpen = sn.InfoOpen
+				}
+			}},
+			{Label: "Second"},
+		},
+	})
+	nsWrite(w, nsState, "m", MapState{FocusedOverlayID: "a", InfoOpen: true})
+	s := MapState{FocusedOverlayID: "a", InfoOpen: true, InfoFocusIndex: 0}
+	e := &gui.Event{KeyCode: gui.KeyEnter}
+
+	if !handleFocusKey(Cfg{ID: "m"}, &s, e, w) {
+		t.Fatalf("want consumed")
+	}
+
+	if fired != 1 {
+		t.Fatalf("callback fired %d times, want 1", fired)
+	}
+	if s.InfoOpen {
+		t.Fatalf("popup must close before callback returns")
+	}
+	if s.InfoFocusIndex != 0 {
+		t.Fatalf("focus index must reset, got %d", s.InfoFocusIndex)
+	}
+	if snapOpen {
+		t.Fatalf("Snapshot inside callback saw InfoOpen=true")
+	}
+}
+
+// TestHandleFocusKey_EnterActionPreservesCallbackMutations: Actions
+// typically call map mutators (SetZoom, PanTo) from OnClick.
+// handleFocusKey owns its state writes and persists the dismissal
+// *before* the callback fires so the callback's own SetZoom isn't
+// clobbered by a post-return overwrite.
+func TestHandleFocusKey_EnterActionPreservesCallbackMutations(t *testing.T) {
+	w := &gui.Window{}
+	id := "m"
+	AddOverlay(w, id, &Marker{
+		MarkerID: "a", Title: "A",
+		Actions: []InfoWindowAction{
+			{Label: "ZoomIn", OnClick: func(win *gui.Window) {
+				SetZoom(win, id, 15)
+			}},
+		},
+	})
+	nsWrite(w, nsState, id, MapState{
+		FocusedOverlayID: "a",
+		InfoOpen:         true,
+		Zoom:             10,
+	})
+	s := nsRead[MapState](w, nsState, id)
+	if !handleFocusKey(Cfg{ID: id}, &s, &gui.Event{KeyCode: gui.KeyEnter}, w) {
+		t.Fatalf("want consumed")
+	}
+	got, _ := Snapshot(w, id)
+	if got.Zoom != 15 {
+		t.Fatalf("SetZoom inside action callback was lost: zoom=%d want 15", got.Zoom)
+	}
+	if got.InfoOpen {
+		t.Fatalf("popup must be closed after action fires")
+	}
+}
+
+// TestHandleFocusKey_EnterOpensPopupPreservesOnPOISelectMutations:
+// OnPOISelect callbacks mutating map state via PanTo/SetZoom must
+// survive handleFocusKey's popup-open write.
+func TestHandleFocusKey_EnterOpensPopupPreservesOnPOISelectMutations(t *testing.T) {
+	w := &gui.Window{}
+	id := "m"
+	AddOverlay(w, id, &Marker{MarkerID: "a", Title: "A"})
+	nsWrite(w, nsState, id, MapState{FocusedOverlayID: "a", Zoom: 10})
+
+	c := Cfg{ID: id, OnPOISelect: func(win *gui.Window, _ Overlay) {
+		SetZoom(win, id, 18)
+	}}
+	s := nsRead[MapState](w, nsState, id)
+	if !handleFocusKey(c, &s, &gui.Event{KeyCode: gui.KeyEnter}, w) {
+		t.Fatalf("want consumed")
+	}
+	got, _ := Snapshot(w, id)
+	if got.Zoom != 18 {
+		t.Fatalf("OnPOISelect SetZoom lost: zoom=%d want 18", got.Zoom)
+	}
+	if !got.InfoOpen {
+		t.Fatalf("popup must stay open after OnPOISelect fires")
+	}
+}
+
+// TestHandleFocusKey_EnterOnCloseSlot: Enter on the close slot closes
+// the dialog without invoking any action callback.
+func TestHandleFocusKey_EnterOnCloseSlot(t *testing.T) {
+	w := &gui.Window{}
+	var fired int
+	AddOverlay(w, "m", &Marker{
+		MarkerID: "a", Title: "A",
+		Actions: []InfoWindowAction{
+			{Label: "X", OnClick: func(*gui.Window) { fired++ }},
+		},
+	})
+	s := MapState{FocusedOverlayID: "a", InfoOpen: true, InfoFocusIndex: 1}
+	e := &gui.Event{KeyCode: gui.KeyEnter}
+	if !handleFocusKey(Cfg{ID: "m"}, &s, e, w) {
+		t.Fatalf("want consumed")
+	}
+	if fired != 0 {
+		t.Fatalf("close slot must not fire action callback")
+	}
+	if s.InfoOpen {
+		t.Fatalf("popup must close")
+	}
+}
+
+// TestHandleFocusKey_EnterOnStaleActionIndex: the Actions slice shrank
+// (or was replaced) after the index was stored. Enter must neither
+// panic nor invoke a callback out of range; it closes the popup cleanly
+// so the user gets a consistent state to restart from.
+func TestHandleFocusKey_EnterOnStaleActionIndex(t *testing.T) {
+	w := &gui.Window{}
+	var fired int
+	AddOverlay(w, "m", &Marker{
+		MarkerID: "a", Title: "A",
+		Actions: []InfoWindowAction{
+			{Label: "Only", OnClick: func(*gui.Window) { fired++ }},
+		},
+	})
+	// Index 5 is past every slot — a classic "stored when Actions had
+	// more entries" scenario.
+	s := MapState{FocusedOverlayID: "a", InfoOpen: true, InfoFocusIndex: 5}
+	e := &gui.Event{KeyCode: gui.KeyEnter}
+	if !handleFocusKey(Cfg{ID: "m"}, &s, e, w) {
+		t.Fatalf("want consumed")
+	}
+	if fired != 0 {
+		t.Fatalf("stale index must not invoke callback")
+	}
+	if s.InfoOpen {
+		t.Fatalf("popup must close")
+	}
+}
+
+// TestHandleFocusKey_EnterInPopupStaleMarkerDropsPopup: Enter inside a
+// popup whose owning marker was removed while the dialog was open must
+// reset to a consistent closed state instead of dereferencing a nil
+// Marker. Mirror of TestHandleFocusKey_TabStaleMarkerDropsPopup for
+// the Enter dispatch path.
+func TestHandleFocusKey_EnterInPopupStaleMarkerDropsPopup(t *testing.T) {
+	w := &gui.Window{}
+	s := MapState{FocusedOverlayID: "ghost", InfoOpen: true, InfoFocusIndex: 1}
+	e := &gui.Event{KeyCode: gui.KeyEnter}
+	if !handleFocusKey(Cfg{ID: "m"}, &s, e, w) {
+		t.Fatalf("want consumed")
+	}
+	if s.InfoOpen || s.InfoFocusIndex != 0 {
+		t.Fatalf("stale popup must reset; got InfoOpen=%v idx=%d",
+			s.InfoOpen, s.InfoFocusIndex)
+	}
+}
+
+// TestHandleFocusKey_EnterTitlelessMarkerFiresOnPOISelect: Enter on a
+// decorative focused marker (no Title) with OnPOISelect fires the
+// callback without opening a popup; the callback's map-state mutation
+// survives the return.
+func TestHandleFocusKey_EnterTitlelessMarkerFiresOnPOISelect(t *testing.T) {
+	w := &gui.Window{}
+	id := "m"
+	AddOverlay(w, id, &Marker{MarkerID: "a", Label: "decorative"})
+	nsWrite(w, nsState, id, MapState{FocusedOverlayID: "a", Zoom: 10})
+	var fires int
+	c := Cfg{ID: id, OnPOISelect: func(win *gui.Window, _ Overlay) {
+		fires++
+		SetZoom(win, id, 18)
+	}}
+	s := nsRead[MapState](w, nsState, id)
+	if !handleFocusKey(c, &s, &gui.Event{KeyCode: gui.KeyEnter}, w) {
+		t.Fatalf("want consumed")
+	}
+	if fires != 1 {
+		t.Fatalf("OnPOISelect fired %d times, want 1", fires)
+	}
+	if s.InfoOpen {
+		t.Fatalf("titleless marker must not open popup")
+	}
+	got, _ := Snapshot(w, id)
+	if got.Zoom != 18 {
+		t.Fatalf("OnPOISelect SetZoom lost: zoom=%d want 18", got.Zoom)
+	}
+}
+
+// TestHandleFocusKey_EnterOpensPopupResetsFocusIndex: opening the popup
+// via Enter on a focused marker must seed InfoFocusIndex=0 so Tab lands
+// on the first action, regardless of any prior stale index.
+func TestHandleFocusKey_EnterOpensPopupResetsFocusIndex(t *testing.T) {
+	w := &gui.Window{}
+	AddOverlay(w, "m", &Marker{MarkerID: "a", Title: "A"})
+	s := MapState{FocusedOverlayID: "a", InfoFocusIndex: 7}
+	e := &gui.Event{KeyCode: gui.KeyEnter}
+	if !handleFocusKey(Cfg{ID: "m"}, &s, e, w) {
+		t.Fatalf("want consumed")
+	}
+	if !s.InfoOpen {
+		t.Fatalf("popup must open")
+	}
+	if s.InfoFocusIndex != 0 {
+		t.Fatalf("InfoFocusIndex must reset to 0, got %d", s.InfoFocusIndex)
+	}
+}
+
+// TestHandleFocusKey_EscapeResetsInfoFocusIndex: Escape while the popup
+// is open must clear both InfoOpen and InfoFocusIndex.
+func TestHandleFocusKey_EscapeResetsInfoFocusIndex(t *testing.T) {
+	w := &gui.Window{}
+	AddOverlay(w, "m", &Marker{MarkerID: "a", Title: "A"})
+	s := MapState{FocusedOverlayID: "a", InfoOpen: true, InfoFocusIndex: 2}
+	e := &gui.Event{KeyCode: gui.KeyEscape}
+	if !handleFocusKey(Cfg{ID: "m"}, &s, e, w) {
+		t.Fatalf("want consumed")
+	}
+	if s.InfoOpen || s.InfoFocusIndex != 0 {
+		t.Fatalf("esc must reset; got InfoOpen=%v idx=%d",
+			s.InfoOpen, s.InfoFocusIndex)
 	}
 }

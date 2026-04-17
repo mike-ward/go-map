@@ -15,6 +15,11 @@ const focusRingRadius float32 = 11
 // focusRingWidth is the stroke width of the focus ring.
 const focusRingWidth float32 = 2
 
+// focusRingColor is the gold stroke shared by every focus ring
+// (marker outline + popup sub-element outline) so all focus states
+// read as part of the same visual vocabulary.
+var focusRingColor = gui.Hex(0xFFD400)
+
 // infoPopup layout constants. Kept package-local and sized so the
 // popup stays legible at the default 11 px body style without
 // crowding adjacent markers.
@@ -165,12 +170,12 @@ func drawFocus(w *gui.Window, id string, dc *gui.DrawContext, vp viewport, m *Ma
 		clearInfoRect(w, id)
 		return
 	}
-	dc.Circle(mx, my, focusRingRadius, gui.Hex(0xFFD400), focusRingWidth)
+	dc.Circle(mx, my, focusRingRadius, focusRingColor, focusRingWidth)
 	if !s.InfoOpen || m.Title == "" {
 		clearInfoRect(w, id)
 		return
 	}
-	next := drawInfoWindow(dc, mx, my, m)
+	next := drawInfoWindow(dc, mx, my, m, s.InfoFocusIndex)
 	if !next.Valid {
 		clearInfoRect(w, id)
 		return
@@ -206,7 +211,7 @@ func isFiniteF32(v float32) bool {
 // below. Horizontal placement centers on the marker and clamps to
 // keep the popup fully on-screen. Non-finite / zero canvas size short-
 // circuits to a zero-Valid result so the caller clears any stale rect.
-func drawInfoWindow(dc *gui.DrawContext, mx, my float32, m *Marker) infoRectState {
+func drawInfoWindow(dc *gui.DrawContext, mx, my float32, m *Marker, focusIdx int8) infoRectState {
 	if !isFiniteF32(dc.Width) || !isFiniteF32(dc.Height) ||
 		dc.Width <= 0 || dc.Height <= 0 {
 		return infoRectState{}
@@ -241,6 +246,14 @@ func drawInfoWindow(dc *gui.DrawContext, mx, my float32, m *Marker) infoRectStat
 			continue
 		}
 		lw := dc.TextWidth(label, infoActionStyle) + infoActionPadX*2
+		// A broken TextWidth (NaN / ±Inf / negative) would poison
+		// actionRowW and every downstream actions[i].X/W, which the
+		// focus-ring RoundedRect and the chip FilledRoundedRect would
+		// then feed to the tessellator. Skip the entry — same posture
+		// as drawInfoWindow's title/body width guard.
+		if !isFiniteF32(lw) || lw <= 0 {
+			continue
+		}
 		actionLabels[actionCount] = label
 		actionWidths[actionCount] = lw
 		if actionCount > 0 {
@@ -357,6 +370,20 @@ func drawInfoWindow(dc *gui.DrawContext, mx, my float32, m *Marker) infoRectStat
 			)
 			cx += bw + infoActionSpacing
 		}
+	}
+
+	// Focus ring drawn last so the outline sits on top of chip fills.
+	// Out-of-range indices paint nothing — a stale focus index drops
+	// silently until the next open reseeds it.
+	idx := int(focusIdx)
+	switch {
+	case idx >= 0 && idx < actionCount:
+		a := actions[idx]
+		dc.RoundedRect(a.X, a.Y, a.W, a.H, 3,
+			focusRingColor, focusRingWidth)
+	case idx == actionCount:
+		dc.RoundedRect(closeX, closeY, infoCloseSize, infoCloseSize, 3,
+			focusRingColor, focusRingWidth)
 	}
 
 	return infoRectState{

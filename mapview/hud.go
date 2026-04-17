@@ -251,9 +251,37 @@ func stateForA11Y(s MapState, focused *Marker) string {
 	}
 	lead := "Marker focused: " + markerA11YText(focused) + ". "
 	if s.InfoOpen {
-		lead = "Info window open. " + lead
+		lead = "Info window open. " + lead + infoFocusA11Y(focused, s.InfoFocusIndex)
 	}
 	return lead + base
+}
+
+// a11y prefix strings for popup sub-element announcements. The
+// trailing space lets callers concatenate unconditionally.
+const (
+	a11yActionFocused = "Action focused: "
+	a11yCloseFocused  = "Close button focused. "
+)
+
+// infoFocusA11Y describes the popup sub-element at idx as a trailing
+// fragment. Empty when idx is out of range so a stale index degrades
+// to a silent read of the plain popup sentence.
+func infoFocusA11Y(m *Marker, idx int8) string {
+	i := int(idx)
+	if i < 0 {
+		return ""
+	}
+	if i < len(m.Actions) {
+		label := truncateUTF8(m.Actions[i].Label, maxInfoActionBytes)
+		if label == "" {
+			return ""
+		}
+		return a11yActionFocused + label + ". "
+	}
+	if i == len(m.Actions) {
+		return a11yCloseFocused
+	}
+	return ""
 }
 
 // markerA11YText picks the best human-readable descriptor for m. Title

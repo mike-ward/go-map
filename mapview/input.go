@@ -77,32 +77,41 @@ func handlePopupClick(w *gui.Window, id string, e *gui.Event) bool {
 		e.IsHandled = true
 		return true
 	case infoHitAction:
-		m := markerByID(w, id, rect.MarkerID)
-		closeInfoPopup(w, id)
-		// Belt-and-suspenders bounds: hit() already clamps against
-		// MaxInfoActions, but re-checking here means a future refactor
-		// of either side cannot drive an OOB index on Marker.Actions.
-		if m != nil && h.Index >= 0 && h.Index < MaxInfoActions &&
-			h.Index < len(m.Actions) {
-			if cb := m.Actions[h.Index].OnClick; cb != nil {
-				cb(w)
-			}
-		}
+		dispatchInfoAction(w, id, markerByID(w, id, rect.MarkerID), h.Index)
 		e.IsHandled = true
 		return true
 	}
 	return false
 }
 
-// closeInfoPopup flips InfoOpen off on the map state. No-op when the
-// popup is already closed so a second close press on a race does not
-// dirty the state map.
+// dispatchInfoAction closes the popup and, when idx is in range, fires
+// the action callback. Invariant shared with the keyboard Enter path:
+// registry state is persisted with InfoOpen=false *before* the callback
+// runs so any Snapshot read inside the callback sees the dismissed
+// state. Bounds-guarded against both MaxInfoActions and the live
+// Actions length so a stale index from a shrunken Actions slice cannot
+// OOB.
+func dispatchInfoAction(w *gui.Window, id string, m *Marker, idx int) {
+	closeInfoPopup(w, id)
+	if m == nil || idx < 0 || idx >= MaxInfoActions || idx >= len(m.Actions) {
+		return
+	}
+	if cb := m.Actions[idx].OnClick; cb != nil {
+		cb(w)
+	}
+}
+
+// closeInfoPopup flips InfoOpen off on the map state and resets the
+// popup focus index so the next open lands on the first sub-element.
+// No-op when the popup is already closed so a second close press on a
+// race does not dirty the state map.
 func closeInfoPopup(w *gui.Window, id string) {
 	s := nsRead[MapState](w, nsState, id)
-	if !s.InfoOpen {
+	if !s.InfoOpen && s.InfoFocusIndex == 0 {
 		return
 	}
 	s.InfoOpen = false
+	s.InfoFocusIndex = 0
 	nsWrite(w, nsState, id, s)
 }
 
@@ -216,13 +225,24 @@ func panDragEnd(c Cfg) func(*gui.Layout, *gui.Event, *gui.Window) {
 			if m.Title != "" {
 				wantOpen = true
 			}
-			if s.FocusedOverlayID != m.MarkerID || s.InfoOpen != wantOpen {
+			// Reset sub-element focus when switching marker or
+			// opening a fresh popup; preserve it on a re-click of
+			// the already-open marker.
+			wantIdx := s.InfoFocusIndex
+			if wantOpen && (s.FocusedOverlayID != m.MarkerID || !s.InfoOpen) {
+				wantIdx = 0
+			}
+			if s.FocusedOverlayID != m.MarkerID ||
+				s.InfoOpen != wantOpen ||
+				s.InfoFocusIndex != wantIdx {
 				s.FocusedOverlayID = m.MarkerID
 				s.InfoOpen = wantOpen
+				s.InfoFocusIndex = wantIdx
 				nsWrite(w, nsState, id, s)
 			}
 		} else if hit == nil && s.InfoOpen {
 			s.InfoOpen = false
+			s.InfoFocusIndex = 0
 			nsWrite(w, nsState, id, s)
 		}
 		if hit != nil && c.OnPOISelect != nil {
@@ -382,7 +402,6 @@ func onKeyDown(c Cfg, seed MapState) func(*gui.Layout, *gui.Event, *gui.Window) 
 	return func(_ *gui.Layout, e *gui.Event, w *gui.Window) {
 		s := gui.StateReadOr[string, MapState](w, nsState, id, seed)
 		if handleFocusKey(c, &s, e, w) {
-			nsWrite(w, nsState, id, s)
 			e.IsHandled = true
 			return
 		}
@@ -425,16 +444,43 @@ func onKeyDown(c Cfg, seed MapState) func(*gui.Layout, *gui.Event, *gui.Window) 
 }
 
 // handleFocusKey processes Tab, Enter, and Escape for marker-mode
-// focus navigation. Returns true when the event was consumed; callers
-// persist the mutated MapState and flag the event handled. Pure apart
-// from the OnPOISelect callback fire — reading markers through the
-// overlay registry keeps the state write in onKeyDown for uniformity.
+// focus navigation. Returns true when the event was consumed.
+//
+// Owns its registry writes so callback-firing branches can persist
+// pre-callback state (invariant: a callback that reads Snapshot must
+// see the post-dismissal map state). Pre-refactor this was split
+// between handleFocusKey and the caller, forcing a (consumed, wrote)
+// tuple — now every consumed branch writes exactly once internally.
+//
+// When an InfoWindow popup is open, Tab/Shift-Tab trap focus inside the
+// popup (cycling Actions then close), and Enter activates the
+// sub-element at s.InfoFocusIndex. Marker cycling and system-focus
+// escape are blocked until the popup is dismissed.
 func handleFocusKey(c Cfg, s *MapState, e *gui.Event, w *gui.Window) bool {
 	switch e.KeyCode {
 	case gui.KeyTab:
+		// Popup focus-trap takes priority. Without this short-circuit
+		// Tab would walk to the next marker and close the popup,
+		// violating the dialog contract.
+		if s.InfoOpen {
+			bm := readOverlays(w, c.ID)
+			m := focusedMarker(bm, *s)
+			if m == nil {
+				s.InfoOpen = false
+				s.InfoFocusIndex = 0
+				nsWrite(w, nsState, c.ID, *s)
+				return true
+			}
+			step := 1
+			if e.Modifiers.Has(gui.ModShift) {
+				step = -1
+			}
+			s.InfoFocusIndex = cycleInfoFocus(s.InfoFocusIndex, len(m.Actions), step)
+			nsWrite(w, nsState, c.ID, *s)
+			return true
+		}
 		ids := focusableMarkerIDs(readOverlays(w, c.ID))
 		if len(ids) == 0 || s.FocusedOverlayID == "" {
-			// No markers, or viewport mode — let system focus advance.
 			return false
 		}
 		step := 1
@@ -442,10 +488,28 @@ func handleFocusKey(c Cfg, s *MapState, e *gui.Event, w *gui.Window) bool {
 			step = -1
 		}
 		s.FocusedOverlayID = nextFocusID(ids, s.FocusedOverlayID, step)
-		s.InfoOpen = false
+		nsWrite(w, nsState, c.ID, *s)
 		return true
 	case gui.KeyEnter:
 		bm := readOverlays(w, c.ID)
+		if s.InfoOpen {
+			m := focusedMarker(bm, *s)
+			if m == nil {
+				s.InfoOpen = false
+				s.InfoFocusIndex = 0
+				nsWrite(w, nsState, c.ID, *s)
+				return true
+			}
+			idx := int(s.InfoFocusIndex)
+			// dispatchInfoAction persists state+fires cb; the mouse
+			// path uses the same helper so the invariants stay aligned.
+			dispatchInfoAction(w, c.ID, m, idx)
+			// Reflect the dismissal in the caller's local snapshot too
+			// (tests read s after handleFocusKey returns).
+			s.InfoOpen = false
+			s.InfoFocusIndex = 0
+			return true
+		}
 		if s.FocusedOverlayID == "" {
 			ids := focusableMarkerIDs(bm)
 			if len(ids) == 0 {
@@ -453,19 +517,25 @@ func handleFocusKey(c Cfg, s *MapState, e *gui.Event, w *gui.Window) bool {
 			}
 			s.FocusedOverlayID = ids[0]
 			s.InfoOpen = false
+			s.InfoFocusIndex = 0
+			nsWrite(w, nsState, c.ID, *s)
 			return true
 		}
 		m := focusedMarker(bm, *s)
 		if m == nil {
-			// Stale focus: overlay removed. Reset and let the next
-			// keypress start over cleanly.
 			s.FocusedOverlayID = ""
 			s.InfoOpen = false
+			s.InfoFocusIndex = 0
+			nsWrite(w, nsState, c.ID, *s)
 			return true
 		}
 		if m.Title != "" {
 			s.InfoOpen = true
+			s.InfoFocusIndex = 0
 		}
+		// Persist before the callback so OnPOISelect consumers that
+		// mutate map state (PanTo, SetZoom) are not clobbered.
+		nsWrite(w, nsState, c.ID, *s)
 		if c.OnPOISelect != nil {
 			c.OnPOISelect(w, m)
 		}
@@ -473,15 +543,45 @@ func handleFocusKey(c Cfg, s *MapState, e *gui.Event, w *gui.Window) bool {
 	case gui.KeyEscape:
 		if s.InfoOpen {
 			s.InfoOpen = false
+			s.InfoFocusIndex = 0
+			nsWrite(w, nsState, c.ID, *s)
 			return true
 		}
 		if s.FocusedOverlayID != "" {
 			s.FocusedOverlayID = ""
+			nsWrite(w, nsState, c.ID, *s)
 			return true
 		}
 		return false
 	}
 	return false
+}
+
+// cycleInfoFocus advances a popup-focus index by step, wrapping across
+// the range [0, actionCount] where the trailing slot (== actionCount)
+// is the close button. Input index is clamped first so a stale value
+// that drifted past the current Action count still produces a sane next
+// index. actionCount is clamped to MaxInfoActions so an author-supplied
+// Actions slice longer than the draw cap cannot (a) silently wrap via
+// int8 truncation or (b) let Tab land on a slot that won't render.
+// Negative actionCount collapses to close-only (n=1). Pure —
+// Window-free, unit-testable.
+func cycleInfoFocus(current int8, actionCount, step int) int8 {
+	if actionCount < 0 {
+		actionCount = 0
+	} else if actionCount > MaxInfoActions {
+		actionCount = MaxInfoActions
+	}
+	n := actionCount + 1 // +1 for the close-button slot
+	i := int(current)
+	if i < 0 || i >= n {
+		i = 0
+	}
+	i = (i + step) % n
+	if i < 0 {
+		i += n
+	}
+	return int8(i)
 }
 
 // shiftCenter translates s.Center by (dx, dy) screen-pixels at the

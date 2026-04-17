@@ -28,7 +28,10 @@ const (
 //
 // FocusedOverlayID is the Marker currently under keyboard focus (empty
 // means viewport mode). InfoOpen is true when the InfoWindow popup is
-// visible; only meaningful when FocusedOverlayID != "".
+// visible; only meaningful when FocusedOverlayID != "". InfoFocusIndex
+// points at the keyboard-focused sub-element of an open popup:
+// 0..len(Actions)-1 select an action; len(Actions) is the close button.
+// Reset to 0 on every popup open; value is ignored when InfoOpen=false.
 //
 // Transient drag-tracking fields live on panState below to keep the
 // snapshot type small.
@@ -37,6 +40,7 @@ type MapState struct {
 	Zoom             uint32
 	FocusedOverlayID string
 	InfoOpen         bool
+	InfoFocusIndex   int8
 }
 
 // panState tracks an in-progress drag pan. Stored in a separate

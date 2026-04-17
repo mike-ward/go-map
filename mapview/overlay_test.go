@@ -698,6 +698,54 @@ func TestPanDragEnd_MarkerClickOpensInfoWindow(t *testing.T) {
 	if !got.InfoOpen {
 		t.Errorf("InfoOpen should be true after titled-marker click")
 	}
+	if got.InfoFocusIndex != 0 {
+		t.Errorf("InfoFocusIndex after open = %d, want 0",
+			got.InfoFocusIndex)
+	}
+}
+
+// TestPanDragEnd_MarkerClickResetsPopupFocus: clicking a titled marker
+// while the popup is already open on another marker must seed the
+// popup sub-element focus to 0 so Tab lands on the first action of the
+// new target rather than a stale index from the prior marker.
+func TestPanDragEnd_MarkerClickResetsPopupFocus(t *testing.T) {
+	w := &gui.Window{}
+	id := "m"
+	center := projection.LatLng{Lat: 45, Lng: -122}
+	// Popup already open on "first" with a non-zero sub-element focus.
+	readState(w, id, MapState{
+		Center: center, Zoom: 10,
+		FocusedOverlayID: "first",
+		InfoOpen:         true,
+		InfoFocusIndex:   2,
+	})
+	AddOverlay(w, id, &Marker{
+		MarkerID: "first",
+		Pos:      projection.LatLng{Lat: 45.1, Lng: -122},
+		Title:    "First",
+	})
+	AddOverlay(w, id, &Marker{
+		MarkerID: "second",
+		Pos:      center,
+		Title:    "Second",
+	})
+	canvasW, canvasH := float32(200), float32(200)
+	cx, cy := canvasW/2, canvasH/2
+	nsWrite(w, nsPan, id, panState{
+		Active: true, Moved: false,
+		StartX: cx, StartY: cy, LocalX: cx, LocalY: cy,
+		CanvasW: canvasW, CanvasH: canvasH,
+	})
+	panDragEnd(Cfg{ID: id})(nil, &gui.Event{MouseX: cx, MouseY: cy}, w)
+
+	got, _ := Snapshot(w, id)
+	if got.FocusedOverlayID != "second" {
+		t.Errorf("focused id = %q, want %q", got.FocusedOverlayID, "second")
+	}
+	if got.InfoFocusIndex != 0 {
+		t.Errorf("InfoFocusIndex after marker switch = %d, want 0",
+			got.InfoFocusIndex)
+	}
 }
 
 // TestPanDragEnd_TitlelessClickKeepsInfoClosed: decorative markers
