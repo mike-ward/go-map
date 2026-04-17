@@ -114,17 +114,19 @@ func panDragEnd(c Cfg) func(*gui.Layout, *gui.Event, *gui.Window) {
 		upY := e.MouseY - (p.StartY - p.LocalY)
 		s := nsRead[MapState](w, nsState, id)
 		vp := computeViewport(p.CanvasW, p.CanvasH, s)
-		// Hit-test once per click — nesting the loop inside an
-		// OnPOISelect-nil gate would mask a Marker.OnClick set on an
-		// overlay when the author elected not to set the map-level
-		// selector.
+		// Hit-test once per click. Walking Range forward and keeping
+		// the last match makes the topmost (last-drawn) overlay win
+		// without needing a reverse iterator — BoundedMap only exposes
+		// forward order. Hoist the hit-test above the OnPOISelect-nil
+		// gate so a Marker.OnClick still fires when the author elected
+		// not to set the map-level selector.
 		var hit Overlay
-		for _, o := range readOverlays(w, id) {
+		readOverlays(w, id).Range(func(_ string, o Overlay) bool {
 			if o.HitTest(vp, upX, upY) {
 				hit = o
-				break
 			}
-		}
+			return true
+		})
 		if hit != nil && c.OnPOISelect != nil {
 			c.OnPOISelect(w, hit)
 		}

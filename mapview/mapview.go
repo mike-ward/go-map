@@ -219,38 +219,31 @@ func seedOverlaysOnce(w *gui.Window, c Cfg) {
 		return
 	}
 	if len(c.InitialOverlays) > 0 {
-		m := readOverlays(w, c.ID)
+		bm := readOverlays(w, c.ID)
 		for _, o := range c.InitialOverlays {
-			m[o.ID()] = o
+			bm.Set(o.ID(), o)
 		}
 	}
 	nsWrite(w, nsSeeded, c.ID, true)
 }
 
 // drawOverlays renders each overlay whose projected bounding box
-// intersects the canvas. Culling runs in world-pixel space at the
-// current zoom — lat/lng culling breaks on antimeridian-straddling
-// viewports, where Unproject returns raw lng > 180 that no longer
-// compares against clamped overlay longitudes. The X test is applied
-// at three world shifts (0, ±worldSize) so a wrapping viewport still
-// finds the correct overlays. Map iteration order is random; overlays
-// at the same screen position z-order nondeterministically across
-// frames — locked down when the spatial index lands in v0.3.
-func drawOverlays(dc *gui.DrawContext, vp viewport, overlays overlayMap) {
-	if len(overlays) == 0 {
-		return
-	}
+// intersects the canvas. BoundedMap.Range walks insertion order so
+// the overlay added last draws on top; the hit-test in panDragEnd
+// keeps the final match to agree with that ordering. See
+// overlayVisible for the antimeridian-straddle handling.
+func drawOverlays(dc *gui.DrawContext, vp viewport, overlays *gui.BoundedMap[string, Overlay]) {
 	worldPx := projection.WorldSize(vp.Z)
 	minX := float64(vp.OriginX)
 	maxX := float64(vp.OriginX + vp.W)
 	minY := float64(vp.OriginY)
 	maxY := float64(vp.OriginY + vp.H)
-	for _, o := range overlays {
-		if !overlayVisible(o, vp.Z, worldPx, minX, maxX, minY, maxY) {
-			continue
+	overlays.Range(func(_ string, o Overlay) bool {
+		if overlayVisible(o, vp.Z, worldPx, minX, maxX, minY, maxY) {
+			o.Draw(dc, vp)
 		}
-		o.Draw(dc, vp)
-	}
+		return true
+	})
 }
 
 // overlayVisible is the culling predicate for drawOverlays. Pure

@@ -133,49 +133,47 @@ func SetView(w *gui.Window, id string, c projection.LatLng, zoom uint32) {
 	sm.Set(id, s)
 }
 
-// overlayMap is the persistent per-map overlay list. Stored as
-// map[overlay-id]Overlay in a dedicated namespace so MapState stays
-// comparable (maps are not) and so AddOverlay / RemoveOverlay cannot
-// clobber the viewport snapshot.
-type overlayMap map[string]Overlay
+// capOverlaysPerMap is the FIFO eviction ceiling applied by the inner
+// BoundedMap. Matches the plan's 10k-marker benchmark target; the
+// 10001st AddOverlay evicts the first registered.
+const capOverlaysPerMap = 10_000
 
 // readOverlays returns the live overlay map for id, creating an empty
-// one if the registry has no entry yet. Mutators receive the same map
-// the widget reads, so writes take effect on the next frame.
-func readOverlays(w *gui.Window, id string) overlayMap {
-	sm := gui.StateMap[string, overlayMap](w, nsOverlays, capMaps)
-	if m, ok := sm.Get(id); ok && m != nil {
-		return m
+// BoundedMap if the registry has no entry yet. Mutators receive the
+// same pointer the widget reads, so writes take effect on the next
+// frame. BoundedMap.Range iterates in insertion order, which drives
+// the deterministic z-order of drawOverlays and panDragEnd hit-test.
+func readOverlays(w *gui.Window, id string) *gui.BoundedMap[string, Overlay] {
+	sm := gui.StateMap[string, *gui.BoundedMap[string, Overlay]](
+		w, nsOverlays, capMaps)
+	if bm, ok := sm.Get(id); ok && bm != nil {
+		return bm
 	}
-	m := make(overlayMap)
-	sm.Set(id, m)
-	return m
+	bm := gui.NewBoundedMap[string, Overlay](capOverlaysPerMap)
+	sm.Set(id, bm)
+	return bm
 }
 
 // AddOverlay registers o on the map identified by id. o.ID() must be
-// non-empty; duplicates replace the prior entry. Safe to call before
-// the first frame — state is created on demand.
+// non-empty; duplicates replace the prior entry in place. Safe to call
+// before the first frame — state is created on demand.
 func AddOverlay(w *gui.Window, id string, o Overlay) {
 	if o == nil || o.ID() == "" {
 		return
 	}
-	readOverlays(w, id)[o.ID()] = o
+	readOverlays(w, id).Set(o.ID(), o)
 }
 
 // RemoveOverlay deletes the overlay with the given overlay-ID. No-op
 // if absent.
 func RemoveOverlay(w *gui.Window, id, overlayID string) {
-	m := readOverlays(w, id)
-	delete(m, overlayID)
+	readOverlays(w, id).Delete(overlayID)
 }
 
 // ClearOverlays removes every overlay registered against id. Intended
 // for layer switchers that repopulate markers on change.
 func ClearOverlays(w *gui.Window, id string) {
-	m := readOverlays(w, id)
-	for k := range m {
-		delete(m, k)
-	}
+	readOverlays(w, id).Clear()
 }
 
 // FitBounds centers the map on b and picks the largest integer zoom at

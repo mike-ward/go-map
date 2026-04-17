@@ -93,22 +93,23 @@ func TestCircle_HitTest_ScalesWithZoom(t *testing.T) {
 func TestAddOverlay_RequiresID(t *testing.T) {
 	w := &gui.Window{}
 	AddOverlay(w, "m", &Marker{MarkerID: "", Pos: projection.LatLng{}})
-	if len(readOverlays(w, "m")) != 0 {
+	if readOverlays(w, "m").Len() != 0 {
 		t.Error("empty-ID overlay should be rejected")
 	}
 }
 
 // AddOverlay + RemoveOverlay round-trip through the registry; Remove
-// leaves the namespace entry so later Adds still land in the same map.
+// leaves the namespace entry so later Adds still land in the same
+// BoundedMap.
 func TestAddOverlay_RoundTrip(t *testing.T) {
 	w := &gui.Window{}
 	m := &Marker{MarkerID: "x", Pos: projection.LatLng{Lat: 1, Lng: 2}}
 	AddOverlay(w, "m", m)
-	if got := readOverlays(w, "m")["x"]; got != m {
-		t.Errorf("lookup after Add = %v, want %v", got, m)
+	if got, ok := readOverlays(w, "m").Get("x"); !ok || got != m {
+		t.Errorf("lookup after Add = %v ok=%v, want %v true", got, ok, m)
 	}
 	RemoveOverlay(w, "m", "x")
-	if _, ok := readOverlays(w, "m")["x"]; ok {
+	if _, ok := readOverlays(w, "m").Get("x"); ok {
 		t.Error("entry still present after Remove")
 	}
 }
@@ -118,7 +119,7 @@ func TestClearOverlays(t *testing.T) {
 	AddOverlay(w, "m", &Marker{MarkerID: "a", Pos: projection.LatLng{}})
 	AddOverlay(w, "m", &Marker{MarkerID: "b", Pos: projection.LatLng{}})
 	ClearOverlays(w, "m")
-	if n := len(readOverlays(w, "m")); n != 0 {
+	if n := readOverlays(w, "m").Len(); n != 0 {
 		t.Errorf("after Clear len = %d, want 0", n)
 	}
 }
@@ -502,7 +503,7 @@ func TestSeedOverlaysOnce_DoesNotResurrectRemoved(t *testing.T) {
 	seedOverlaysOnce(w, c)
 	RemoveOverlay(w, "m", "a")
 	seedOverlaysOnce(w, c)
-	if _, ok := readOverlays(w, "m")["a"]; ok {
+	if _, ok := readOverlays(w, "m").Get("a"); ok {
 		t.Error("second seedOverlaysOnce call resurrected removed overlay")
 	}
 }
@@ -628,5 +629,42 @@ func TestPanDragEnd_OnClickDeliversLatLng(t *testing.T) {
 	if math.Abs(got.Lat-seed.Center.Lat) > 1e-4 ||
 		math.Abs(got.Lng-seed.Center.Lng) > 1e-4 {
 		t.Errorf("OnClick LatLng = %+v, want %+v", got, seed.Center)
+	}
+}
+
+// When two overlays overlap at the click point, panDragEnd must
+// report the one drawn last (topmost). The hit-test walks BoundedMap
+// insertion order and keeps the final match — regression guard for
+// that iteration direction.
+func TestPanDragEnd_TopmostOverlayWins(t *testing.T) {
+	w := &gui.Window{}
+	id := "m"
+	center := projection.LatLng{Lat: 45, Lng: -122}
+	readState(w, id, MapState{Center: center, Zoom: 10})
+
+	bottom := &Marker{MarkerID: "bottom", Pos: center,
+		OnClick: func(*gui.Window) {}}
+	top := &Marker{MarkerID: "top", Pos: center,
+		OnClick: func(*gui.Window) {}}
+	AddOverlay(w, id, bottom)
+	AddOverlay(w, id, top)
+
+	var selected Overlay
+	c := Cfg{
+		ID:          id,
+		OnPOISelect: func(_ *gui.Window, o Overlay) { selected = o },
+	}
+
+	canvasW, canvasH := float32(200), float32(200)
+	cx, cy := canvasW/2, canvasH/2
+	nsWrite(w, nsPan, id, panState{
+		Active: true, Moved: false,
+		StartX: cx, StartY: cy, LocalX: cx, LocalY: cy,
+		CanvasW: canvasW, CanvasH: canvasH,
+	})
+	panDragEnd(c)(nil, &gui.Event{MouseX: cx, MouseY: cy}, w)
+
+	if selected != top {
+		t.Errorf("selected = %v, want topmost %v", selected, top)
 	}
 }
