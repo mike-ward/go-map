@@ -238,10 +238,41 @@ type hoverState struct {
 
 // stateForA11Y produces a concise "center + zoom" sentence for
 // screen readers. Called when rebuilding the A11YDescription each
-// frame.
-func stateForA11Y(s MapState) string {
-	return fmt.Sprintf(
+// frame. When a marker is keyboard-focused, its label (and popup
+// contents when open) prepend the viewport sentence so the
+// screen-reader hears focus changes first.
+func stateForA11Y(s MapState, focused *Marker) string {
+	base := fmt.Sprintf(
 		"Map centered at %.4f degrees latitude, %.4f degrees longitude, zoom level %d.",
 		s.Center.Lat, s.Center.Lng, s.Zoom,
 	)
+	if focused == nil {
+		return base
+	}
+	lead := "Marker focused: " + markerA11YText(focused) + ". "
+	if s.InfoOpen {
+		lead = "Info window open. " + lead
+	}
+	return lead + base
+}
+
+// markerA11YText picks the best human-readable descriptor for m. Title
+// wins when present; Label is the fallback so decorative markers still
+// announce something; finally the marker ID keeps the sentence
+// grammatical even when the author left everything blank. Each field
+// is UTF-8-safely truncated so a pathological value cannot push the
+// A11YDescription to megabyte scale each frame.
+func markerA11YText(m *Marker) string {
+	switch {
+	case m.Title != "":
+		t := truncateUTF8(m.Title, maxInfoTitleBytes)
+		if m.Body != "" {
+			return t + ", " + truncateUTF8(m.Body, maxInfoBodyBytes)
+		}
+		return t
+	case m.Label != "":
+		return truncateUTF8(m.Label, maxInfoBodyBytes)
+	default:
+		return truncateUTF8(m.MarkerID, maxInfoBodyBytes)
+	}
 }

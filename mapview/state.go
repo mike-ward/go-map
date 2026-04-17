@@ -18,6 +18,7 @@ const (
 	nsScroll    = "mapview.scroll"
 	nsOverlays  = "mapview.overlays"
 	nsSeeded    = "mapview.seeded"
+	nsInfoRect  = "mapview.inforect"
 	capMaps     = 16
 )
 
@@ -25,11 +26,17 @@ const (
 // registry. Accessed by the widget factory each frame and mutated by
 // package-level helpers (PanTo, SetZoom, ...).
 //
+// FocusedOverlayID is the Marker currently under keyboard focus (empty
+// means viewport mode). InfoOpen is true when the InfoWindow popup is
+// visible; only meaningful when FocusedOverlayID != "".
+//
 // Transient drag-tracking fields live on panState below to keep the
 // snapshot type small.
 type MapState struct {
-	Center projection.LatLng
-	Zoom   uint32
+	Center           projection.LatLng
+	Zoom             uint32
+	FocusedOverlayID string
+	InfoOpen         bool
 }
 
 // panState tracks an in-progress drag pan. Stored in a separate

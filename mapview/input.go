@@ -20,6 +20,13 @@ const dragThresholdPx float32 = 4
 func onMouseDown(c Cfg, seed MapState) func(*gui.Layout, *gui.Event, *gui.Window) {
 	id := c.ID
 	return func(l *gui.Layout, e *gui.Event, w *gui.Window) {
+		// Popup-rect hit-test runs first so a click on the InfoWindow
+		// body neither starts a drag-pan nor falls through to an
+		// overlay beneath the popup. No-op when no popup is drawn.
+		if nsRead[infoRectState](w, nsInfoRect, id).hit(e.MouseX, e.MouseY) {
+			e.IsHandled = true
+			return
+		}
 		if homeButtonHit(l.Shape.Width, e.MouseX, e.MouseY) {
 			nsWrite(w, nsState, id, seed)
 			e.IsHandled = true
@@ -127,6 +134,23 @@ func panDragEnd(c Cfg) func(*gui.Layout, *gui.Event, *gui.Window) {
 			}
 			return true
 		})
+		// A marker hit is also a focus event: the clicked marker
+		// becomes keyboard-focused and its InfoWindow opens (when
+		// Title is set). Mirrors the Enter-on-focused-marker path so
+		// click and keyboard converge on the same popup state. Skip
+		// the write when nothing changed — a second click on the
+		// already-focused marker should not thrash the state map.
+		if m, ok := hit.(*Marker); ok {
+			wantOpen := s.InfoOpen
+			if m.Title != "" {
+				wantOpen = true
+			}
+			if s.FocusedOverlayID != m.MarkerID || s.InfoOpen != wantOpen {
+				s.FocusedOverlayID = m.MarkerID
+				s.InfoOpen = wantOpen
+				nsWrite(w, nsState, id, s)
+			}
+		}
 		if hit != nil && c.OnPOISelect != nil {
 			c.OnPOISelect(w, hit)
 		}
@@ -272,10 +296,22 @@ func sourceMaxZoom(src tile.Source) uint32 {
 //
 // Arrow keys pan by a fraction of the viewport (½ tile by default,
 // 1 tile with Shift, ¼ tile with Ctrl). Plus/minus zoom from the
-// viewport center. Home restores the Initial* seed.
-func onKeyDown(id string, src tile.Source, seed MapState) func(*gui.Layout, *gui.Event, *gui.Window) {
+// viewport center. Home restores the Initial* seed. Tab/Shift-Tab
+// cycle keyboard focus through Marker overlays once a marker is
+// focused; from the viewport (no marker focused), Tab falls through
+// to system focus so the user can leave the widget. Enter enters
+// marker mode (picks the first marker) or, when already focused,
+// fires OnPOISelect and opens the InfoWindow. Escape closes the
+// InfoWindow, then (on a second press) exits marker mode.
+func onKeyDown(c Cfg, seed MapState) func(*gui.Layout, *gui.Event, *gui.Window) {
+	id, src := c.ID, c.Source
 	return func(_ *gui.Layout, e *gui.Event, w *gui.Window) {
 		s := gui.StateReadOr[string, MapState](w, nsState, id, seed)
+		if handleFocusKey(c, &s, e, w) {
+			nsWrite(w, nsState, id, s)
+			e.IsHandled = true
+			return
+		}
 		step := float64(projection.TileSize) / 2
 		switch {
 		case e.Modifiers.Has(gui.ModShift):
@@ -312,6 +348,66 @@ func onKeyDown(id string, src tile.Source, seed MapState) func(*gui.Layout, *gui
 			e.IsHandled = true
 		}
 	}
+}
+
+// handleFocusKey processes Tab, Enter, and Escape for marker-mode
+// focus navigation. Returns true when the event was consumed; callers
+// persist the mutated MapState and flag the event handled. Pure apart
+// from the OnPOISelect callback fire — reading markers through the
+// overlay registry keeps the state write in onKeyDown for uniformity.
+func handleFocusKey(c Cfg, s *MapState, e *gui.Event, w *gui.Window) bool {
+	switch e.KeyCode {
+	case gui.KeyTab:
+		ids := focusableMarkerIDs(readOverlays(w, c.ID))
+		if len(ids) == 0 || s.FocusedOverlayID == "" {
+			// No markers, or viewport mode — let system focus advance.
+			return false
+		}
+		step := 1
+		if e.Modifiers.Has(gui.ModShift) {
+			step = -1
+		}
+		s.FocusedOverlayID = nextFocusID(ids, s.FocusedOverlayID, step)
+		s.InfoOpen = false
+		return true
+	case gui.KeyEnter:
+		bm := readOverlays(w, c.ID)
+		if s.FocusedOverlayID == "" {
+			ids := focusableMarkerIDs(bm)
+			if len(ids) == 0 {
+				return false
+			}
+			s.FocusedOverlayID = ids[0]
+			s.InfoOpen = false
+			return true
+		}
+		m := focusedMarker(bm, *s)
+		if m == nil {
+			// Stale focus: overlay removed. Reset and let the next
+			// keypress start over cleanly.
+			s.FocusedOverlayID = ""
+			s.InfoOpen = false
+			return true
+		}
+		if m.Title != "" {
+			s.InfoOpen = true
+		}
+		if c.OnPOISelect != nil {
+			c.OnPOISelect(w, m)
+		}
+		return true
+	case gui.KeyEscape:
+		if s.InfoOpen {
+			s.InfoOpen = false
+			return true
+		}
+		if s.FocusedOverlayID != "" {
+			s.FocusedOverlayID = ""
+			return true
+		}
+		return false
+	}
+	return false
 }
 
 // shiftCenter translates s.Center by (dx, dy) screen-pixels at the

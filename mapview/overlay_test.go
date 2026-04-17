@@ -668,3 +668,86 @@ func TestPanDragEnd_TopmostOverlayWins(t *testing.T) {
 		t.Errorf("selected = %v, want topmost %v", selected, top)
 	}
 }
+
+// TestPanDragEnd_MarkerClickOpensInfoWindow: a click on a titled
+// marker promotes it to keyboard focus and opens the popup — click
+// and Enter must converge on the same InfoWindow state.
+func TestPanDragEnd_MarkerClickOpensInfoWindow(t *testing.T) {
+	w := &gui.Window{}
+	id := "m"
+	center := projection.LatLng{Lat: 45, Lng: -122}
+	readState(w, id, MapState{Center: center, Zoom: 10})
+	AddOverlay(w, id, &Marker{
+		MarkerID: "titled",
+		Pos:      center,
+		Title:    "Hello",
+	})
+	canvasW, canvasH := float32(200), float32(200)
+	cx, cy := canvasW/2, canvasH/2
+	nsWrite(w, nsPan, id, panState{
+		Active: true, Moved: false,
+		StartX: cx, StartY: cy, LocalX: cx, LocalY: cy,
+		CanvasW: canvasW, CanvasH: canvasH,
+	})
+	panDragEnd(Cfg{ID: id})(nil, &gui.Event{MouseX: cx, MouseY: cy}, w)
+
+	got, _ := Snapshot(w, id)
+	if got.FocusedOverlayID != "titled" {
+		t.Errorf("focused id = %q, want %q", got.FocusedOverlayID, "titled")
+	}
+	if !got.InfoOpen {
+		t.Errorf("InfoOpen should be true after titled-marker click")
+	}
+}
+
+// TestPanDragEnd_TitlelessClickKeepsInfoClosed: decorative markers
+// (no Title) still take keyboard focus on click but must not open the
+// popup, matching the Enter-key path's suppression rule.
+func TestPanDragEnd_TitlelessClickKeepsInfoClosed(t *testing.T) {
+	w := &gui.Window{}
+	id := "m"
+	center := projection.LatLng{Lat: 45, Lng: -122}
+	readState(w, id, MapState{Center: center, Zoom: 10})
+	AddOverlay(w, id, &Marker{MarkerID: "plain", Pos: center, Label: "plain"})
+	canvasW, canvasH := float32(200), float32(200)
+	cx, cy := canvasW/2, canvasH/2
+	nsWrite(w, nsPan, id, panState{
+		Active: true, Moved: false,
+		StartX: cx, StartY: cy, LocalX: cx, LocalY: cy,
+		CanvasW: canvasW, CanvasH: canvasH,
+	})
+	panDragEnd(Cfg{ID: id})(nil, &gui.Event{MouseX: cx, MouseY: cy}, w)
+
+	got, _ := Snapshot(w, id)
+	if got.FocusedOverlayID != "plain" {
+		t.Errorf("focused id = %q, want %q", got.FocusedOverlayID, "plain")
+	}
+	if got.InfoOpen {
+		t.Errorf("InfoOpen should stay false for titleless click")
+	}
+}
+
+// TestOnMouseDown_PopupRectConsumesClick: a mouse-down inside the
+// rendered popup rect consumes the event without starting a drag, so
+// overlays beneath the popup and the map itself stay inert. Uses a
+// pre-seeded nsInfoRect slot to stand in for the previous frame's
+// drawFocus output.
+func TestOnMouseDown_PopupRectConsumesClick(t *testing.T) {
+	w := &gui.Window{}
+	id := "m"
+	seed := MapState{Center: projection.LatLng{Lat: 0, Lng: 0}, Zoom: 2}
+	readState(w, id, seed)
+	nsWrite(w, nsInfoRect, id, infoRectState{
+		X: 30, Y: 30, W: 100, H: 40, Valid: true,
+	})
+	e := &gui.Event{MouseX: 50, MouseY: 50}
+	onMouseDown(Cfg{ID: id}, seed)(&gui.Layout{
+		Shape: &gui.Shape{Width: 400, Height: 300},
+	}, e, w)
+	if !e.IsHandled {
+		t.Fatal("popup hit must mark event handled")
+	}
+	if p := nsRead[panState](w, nsPan, id); p.Active {
+		t.Fatal("popup hit must not start a pan")
+	}
+}

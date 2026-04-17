@@ -169,6 +169,10 @@ func (mv *mapView) GenerateLayout(w *gui.Window) gui.Layout {
 	src := c.Source
 	hover := nsRead[hoverState](w, nsHover, c.ID)
 	overlays := readOverlays(w, c.ID)
+	// Resolve the focused marker once per frame; drawFocus and
+	// stateForA11Y both need it and the BoundedMap Get is cheap but
+	// non-zero — no reason to pay for it twice.
+	focused := focusedMarker(overlays, s)
 	onDraw := func(dc *gui.DrawContext) {
 		vp := computeViewport(dc.Width, dc.Height, s)
 		drawTiles(dc, vp, src)
@@ -178,11 +182,16 @@ func (mv *mapView) GenerateLayout(w *gui.Window) gui.Layout {
 		drawZoomIndicator(dc, s.Zoom)
 		drawHomeButton(dc)
 		drawAttribution(dc, src)
+		// Focus ring + InfoWindow paint last so the popup sits above
+		// the HUD chrome a screen-reader user cannot otherwise navigate
+		// past. drawFocus stashes the rendered popup rect in the state
+		// registry for onMouseDown to consume click-through.
+		drawFocus(w, c.ID, dc, vp, focused, s)
 	}
 
 	a11y := c.A11YDescription
 	if a11y == "" {
-		a11y = stateForA11Y(s)
+		a11y = stateForA11Y(s, focused)
 	}
 
 	inner := gui.DrawCanvas(gui.DrawCanvasCfg{
@@ -205,7 +214,7 @@ func (mv *mapView) GenerateLayout(w *gui.Window) gui.Layout {
 		OnMouseScroll:   onMouseScroll(c.ID, c.Source),
 		OnMouseMove:     onMouseMove(c.ID),
 		OnMouseLeave:    onMouseLeave(c.ID),
-		OnKeyDown:       onKeyDown(c.ID, c.Source, seed),
+		OnKeyDown:       onKeyDown(c, seed),
 	})
 	return inner.GenerateLayout(w)
 }

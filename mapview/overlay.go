@@ -81,10 +81,17 @@ func colorOr(c, fallback gui.Color) gui.Color {
 // for accessibility; OnClick is optional and, if set, causes marker
 // clicks to fire through the map's OnPOISelect callback first and then
 // the marker's own OnClick.
+//
+// Title and Body feed the InfoWindow popup opened by Enter on a
+// keyboard-focused marker (or by a future programmatic hook). Empty
+// Title suppresses the popup entirely; the focus ring still draws so
+// decorative markers remain reachable via Tab.
 type Marker struct {
 	MarkerID string
 	Pos      projection.LatLng
 	Label    string
+	Title    string
+	Body     string
 	Color    gui.Color
 	OnClick  func(*gui.Window)
 }
