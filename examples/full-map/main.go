@@ -61,6 +61,12 @@ func view(w *gui.Window) gui.View {
 				InitialZoom:   cities[0].Zoom,
 				Source:        src,
 				A11YLabel:     "Interactive world map",
+				// Opt into fractional-zoom-per-notch so a plain mouse
+				// wheel (PreciseY=1.0 per click) advances the map by
+				// 0.25 zoom levels instead of 1.0 — lets the demo
+				// showcase slice 5b's sub-integer zoom without needing
+				// trackpad hardware.
+				ScrollZoomGain: 0.25,
 				InitialOverlays: []mapview.Overlay{
 					&mapview.Marker{
 						MarkerID: "seattle",
@@ -109,8 +115,12 @@ func view(w *gui.Window) gui.View {
 	})
 }
 
+// toolbarHeight is shared by the toolbar row and the FitBounds button
+// so the canvas-height math stays in one place.
+const toolbarHeight float32 = 36
+
 func toolbar() gui.View {
-	buttons := make([]gui.View, 0, len(cities))
+	buttons := make([]gui.View, 0, len(cities)+1)
 	for _, c := range cities {
 		c := c
 		buttons = append(buttons, gui.Button(gui.ButtonCfg{
@@ -121,9 +131,27 @@ func toolbar() gui.View {
 			},
 		}))
 	}
+	// "Fit all" exercises the analytical FitBounds path from slice 5a:
+	// the bounds around all four cities don't fit cleanly at any
+	// integer zoom, so the map should land on a non-integer zoom
+	// (HUD shows e.g. "z2.3") and tiles render at the fractional
+	// scale without seams.
+	buttons = append(buttons, gui.Button(gui.ButtonCfg{
+		Padding: gui.Some(gui.Padding{Left: 10, Right: 10, Top: 4, Bottom: 4}),
+		Content: []gui.View{gui.Text(gui.TextCfg{Text: "Fit all"})},
+		OnClick: func(_ *gui.Layout, _ *gui.Event, w *gui.Window) {
+			b := projection.BoundsOf(
+				cities[0].Center, cities[1].Center,
+				cities[2].Center, cities[3].Center,
+			)
+			ww, wh := w.WindowSize()
+			mapview.FitBounds(w, mapID, b, 40,
+				float32(ww), float32(wh)-toolbarHeight)
+		},
+	}))
 	return gui.Row(gui.ContainerCfg{
 		Sizing:  gui.FillFixed,
-		Height:  36,
+		Height:  toolbarHeight,
 		Padding: gui.Some(gui.Padding{Left: 6, Right: 6, Top: 4, Bottom: 4}),
 		Spacing: gui.Some[float32](6),
 		Content: buttons,

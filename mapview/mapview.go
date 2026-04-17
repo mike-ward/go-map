@@ -51,6 +51,15 @@ type Cfg struct {
 	// Appearance
 	Background gui.Color
 
+	// ScrollZoomGain scales raw wheel/trackpad ScrollY before it feeds
+	// the zoom accumulator. Defaults to 1.0 — one notch-wheel click
+	// advances one full zoom level, matching conventional slippy-map
+	// feel. Set below 1.0 to trade wheel speed for fractional-zoom
+	// precision on notch hardware (e.g. 0.25 → four clicks per full
+	// zoom level, each landing on a fractional rest state). Values ≤ 0
+	// or non-finite fall back to 1.0.
+	ScrollZoomGain float32
+
 	// Accessibility
 	A11YLabel       string
 	A11YDescription string
@@ -124,6 +133,9 @@ func Map(cfg Cfg) gui.View {
 	cfg.InitialZoom = clampZoom(cfg.InitialZoom)
 	if cfg.InitialZoom == 0 {
 		cfg.InitialZoom = 2
+	}
+	if !isFiniteF32(cfg.ScrollZoomGain) || cfg.ScrollZoomGain <= 0 {
+		cfg.ScrollZoomGain = 1
 	}
 	cfg.InitialCenter = cfg.InitialCenter.Clamp()
 	for _, o := range cfg.InitialOverlays {
@@ -209,7 +221,7 @@ func (mv *mapView) GenerateLayout(w *gui.Window) gui.Layout {
 		Clip:            true,
 		OnDraw:          onDraw,
 		OnClick:         onMouseDown(c, seed),
-		OnMouseScroll:   onMouseScroll(c.ID, c.Source),
+		OnMouseScroll:   onMouseScroll(c.ID, c.Source, c.ScrollZoomGain),
 		OnMouseMove:     onMouseMove(c.ID),
 		OnMouseLeave:    onMouseLeave(c.ID),
 		OnKeyDown:       onKeyDown(c, seed),

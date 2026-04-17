@@ -76,4 +76,34 @@ func TestMap_DefaultsAppliedOnZeroCfg(t *testing.T) {
 	if mv.cfg.InitialZoom == 0 {
 		t.Error("InitialZoom still 0; expected default seed")
 	}
+	if mv.cfg.ScrollZoomGain != 1 {
+		t.Errorf("ScrollZoomGain = %g, want 1 (default)",
+			mv.cfg.ScrollZoomGain)
+	}
+}
+
+// Invalid ScrollZoomGain (zero, negative, NaN, ±Inf) must coerce to 1
+// so a stray author value cannot silently disable wheel zoom.
+func TestMap_SanitizesInvalidScrollZoomGain(t *testing.T) {
+	for _, g := range []float32{
+		0, -0.5, float32(math.NaN()),
+		float32(math.Inf(1)), float32(math.Inf(-1)),
+	} {
+		v := Map(Cfg{ID: "x", ScrollZoomGain: g})
+		mv := v.(*mapView)
+		if mv.cfg.ScrollZoomGain != 1 {
+			t.Errorf("gain=%v: got %g, want 1", g, mv.cfg.ScrollZoomGain)
+		}
+	}
+}
+
+// Valid sub-1 gain must survive the factory so consumers can opt into
+// fractional-per-notch zoom (slice 5b UX).
+func TestMap_PreservesValidScrollZoomGain(t *testing.T) {
+	v := Map(Cfg{ID: "x", ScrollZoomGain: 0.25})
+	mv := v.(*mapView)
+	if mv.cfg.ScrollZoomGain != 0.25 {
+		t.Errorf("ScrollZoomGain = %g, want 0.25",
+			mv.cfg.ScrollZoomGain)
+	}
 }

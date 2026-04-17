@@ -81,7 +81,7 @@ func TestFireDecision_BothChange(t *testing.T) {
 func TestScrollSteps_NaNFlushesToZero(t *testing.T) {
 	delta, residual := scrollSteps(float32(math.NaN()))
 	if delta != 0 {
-		t.Errorf("delta = %d, want 0", delta)
+		t.Errorf("delta = %g, want 0", delta)
 	}
 	if math.IsNaN(float64(residual)) {
 		t.Errorf("residual = NaN; must be flushed to 0")
@@ -92,46 +92,83 @@ func TestScrollSteps_NaNFlushesToZero(t *testing.T) {
 }
 
 // A single huge ScrollY (or many events between consumes) must not
-// run the consume loop millions of times. The accumulator cap binds
-// delta to ±maxScrollAccum before the loop starts.
+// yield an excessive delta. The accumulator cap binds the input to
+// ±maxScrollAccum before the step computation.
 func TestScrollSteps_AccumCapped(t *testing.T) {
 	for _, in := range []float32{1e6, 1e9, math.MaxFloat32} {
 		delta, _ := scrollSteps(in)
-		if int32(delta) > int32(maxScrollAccum) {
-			t.Errorf("scrollSteps(%g) delta = %d exceeds cap %g",
+		if delta > maxScrollAccum {
+			t.Errorf("scrollSteps(%g) delta = %g exceeds cap %g",
 				in, delta, maxScrollAccum)
 		}
 	}
 	for _, in := range []float32{-1e6, -1e9, -math.MaxFloat32} {
 		delta, _ := scrollSteps(in)
-		if int32(delta) < -int32(maxScrollAccum) {
-			t.Errorf("scrollSteps(%g) delta = %d below cap -%g",
+		if delta < -maxScrollAccum {
+			t.Errorf("scrollSteps(%g) delta = %g below cap -%g",
 				in, delta, maxScrollAccum)
 		}
 	}
 }
 
+// Sub-integer step (0.25) turns a sub-1 accumulator into a fractional
+// zoom delta — the smooth-wheel promise of slice 5b. A full
+// notch-worth of scroll still lands on an integer delta
+// (1.0 = 4 × 0.25) so mouse-wheel UX is unchanged at the notch level.
 func TestScrollSteps(t *testing.T) {
 	cases := []struct {
-		in       float32
-		wantD    int32
-		wantResi float32
+		in              float32
+		wantD, wantResi float32
 	}{
 		{0, 0, 0},
-		{0.4, 0, 0.4},   // sub-threshold accumulates
-		{1.0, 1, 0},     // exactly one tick
-		{2.7, 2, 0.7},   // multi-tick + residual
-		{-0.4, 0, -0.4}, // negative sub-threshold
-		{-1.5, -1, -0.5},
-		{-3.2, -3, -0.2},
+		{0.1, 0, 0.1},     // sub-step: nothing fires
+		{0.25, 0.25, 0},   // exactly one sub-step
+		{0.3, 0.25, 0.05}, // sub-step + residual
+		{0.5, 0.5, 0},     // two sub-steps
+		{1.0, 1.0, 0},     // one notch: four sub-steps, integer delta
+		{2.7, 2.5, 0.2},   // ten sub-steps + residual
+		{-0.1, 0, -0.1},   // negative sub-step
+		{-0.5, -0.5, 0},
+		{-1.0, -1.0, 0},
+		{-3.2, -3.0, -0.2},
 	}
 	for _, c := range cases {
 		gotD, gotR := scrollSteps(c.in)
-		if gotD != c.wantD {
-			t.Errorf("steps(%g) delta = %d, want %d", c.in, gotD, c.wantD)
+		if d := gotD - c.wantD; d > 1e-6 || d < -1e-6 {
+			t.Errorf("steps(%g) delta = %g, want %g", c.in, gotD, c.wantD)
 		}
 		if d := gotR - c.wantResi; d > 1e-6 || d < -1e-6 {
 			t.Errorf("steps(%g) residual = %g, want %g", c.in, gotR, c.wantResi)
+		}
+	}
+}
+
+// Invariant across uncapped accumulator values: delta + residual
+// reconstructs the input exactly. Catches refactors that lose
+// precision on large values. Capped inputs reconstruct to the cap,
+// not the raw input — the last case pins that explicitly.
+func TestScrollSteps_DeltaPlusResidualReconstructsInput(t *testing.T) {
+	cases := []struct {
+		in, want float32
+	}{
+		{0.1, 0.1},
+		{0.25, 0.25},
+		{0.3, 0.3},
+		{0.5, 0.5},
+		{1.0, 1.0},
+		{2.7, 2.7},
+		{-1.5, -1.5},
+		{-3.2, -3.2},
+		{5.5, 5.5},
+		{1e6, maxScrollAccum},   // capped: reconstruct to cap
+		{-1e6, -maxScrollAccum}, // capped negative
+	}
+	for _, c := range cases {
+		d, r := scrollSteps(c.in)
+		got := d + r
+		if x := got - c.want; x > 1e-6 || x < -1e-6 {
+			t.Errorf("scrollSteps(%g): delta+residual=%g, want %g",
+				c.in, got, c.want)
 		}
 	}
 }

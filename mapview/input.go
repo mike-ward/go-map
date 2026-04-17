@@ -258,12 +258,15 @@ func panDragEnd(c Cfg) func(*gui.Layout, *gui.Event, *gui.Window) {
 }
 
 // onMouseScroll handles wheel zoom. Positive ScrollY zooms in;
-// negative zooms out. Fractional scroll (trackpad pixel-scroll)
-// accumulates until it crosses scrollZoomStep, then fires one zoom
-// tick per crossing — keeping the integer-zoom MVP responsive to
-// either notch wheels or smooth trackpads. Zoom pivots toward the
-// cursor so the LatLng under the cursor stays fixed.
-func onMouseScroll(id string, src tile.Source) func(*gui.Layout, *gui.Event, *gui.Window) {
+// negative zooms out. The accumulator fires sub-ticks of
+// scrollZoomStep so trackpad pixel-scroll produces smooth fractional
+// zoom; a notch wheel at the default gain (1.0) lands on integer
+// rest states because four sub-ticks sum to one full level. gain
+// (from Cfg.ScrollZoomGain) scales ScrollY before it hits the
+// accumulator, so gain < 1 yields fractional zoom even on notch
+// hardware. Zoom pivots toward the cursor so the LatLng under the
+// cursor stays fixed.
+func onMouseScroll(id string, src tile.Source, gain float32) func(*gui.Layout, *gui.Event, *gui.Window) {
 	return func(l *gui.Layout, e *gui.Event, w *gui.Window) {
 		if e.ScrollY == 0 {
 			return
@@ -274,7 +277,7 @@ func onMouseScroll(id string, src tile.Source) func(*gui.Layout, *gui.Event, *gu
 		if f := float64(e.ScrollY); math.IsNaN(f) || math.IsInf(f, 0) {
 			return
 		}
-		acc := nsRead[float32](w, nsScroll, id) + e.ScrollY
+		acc := nsRead[float32](w, nsScroll, id) + e.ScrollY*gain
 		delta, acc := scrollSteps(acc)
 		nsWrite(w, nsScroll, id, acc)
 		if delta == 0 {
@@ -283,12 +286,6 @@ func onMouseScroll(id string, src tile.Source) func(*gui.Layout, *gui.Event, *gu
 		}
 
 		s := nsRead[MapState](w, nsState, id)
-		// Wheel and trackpad still produce integer zoom deltas per
-		// slice 5a scope — fractional state is reached only via
-		// SetZoom / SetView / FitBounds. Adding an integer delta to a
-		// possibly-fractional s.Zoom preserves the fractional part
-		// (e.g. 11.3 + 1 = 12.3); slice 5b will revisit wheel
-		// smoothness.
 		newZoom := clampZoom(s.Zoom + float64(delta))
 		if srcMax := float64(sourceMaxZoom(src)); newZoom > srcMax {
 			newZoom = srcMax
@@ -310,25 +307,28 @@ func onMouseScroll(id string, src tile.Source) func(*gui.Layout, *gui.Event, *gu
 	}
 }
 
-// scrollZoomStep is the accumulator threshold at which one zoom tick
-// fires. Mouse-wheel notches typically deliver |ScrollY|≥1 per event
-// and zoom on contact; trackpad pixel-scroll delivers small
-// increments and integrates over several events.
-const scrollZoomStep float32 = 1.0
+// scrollZoomStep is the accumulator threshold at which one zoom
+// sub-tick fires. At 0.25 a notch wheel (|ScrollY|≈1 per event) still
+// lands on integer zoom after 4 sub-ticks while a trackpad pixel-
+// scroll produces smooth fractional zoom per event. Keyboard +/-
+// stays at integer deltas (see onKeyDown) so discoverable rest states
+// remain reachable without wheel finesse.
+const scrollZoomStep float32 = 0.25
 
 // maxScrollAccum bounds the accumulator before it is consumed. A
 // runaway scroll event (or many events between consumes) cannot make
-// the loop body iterate more than this many times — the user only
-// gets to zoom one step per tick anyway, so capping is observable
-// only to abusive input.
+// the computed delta dwarf the zoom range — the clampZoom downstream
+// binds it to [0, maxZoomF] anyway, so capping is observable only to
+// abusive input.
 const maxScrollAccum float32 = 64
 
-// scrollSteps consumes integer zoom ticks from the accumulator and
-// returns the residual. NaN flushes to zero (it cannot drive zoom
-// and would otherwise re-enter the accumulator). Magnitudes are
-// capped to maxScrollAccum so a single huge ScrollY cannot let the
-// computed delta dwarf int32. Pure function — Window-free, testable.
-func scrollSteps(acc float32) (delta int32, residual float32) {
+// scrollSteps consumes zoom sub-ticks from the accumulator and
+// returns the fractional delta along with the residual. NaN flushes
+// to zero (it cannot drive zoom and would otherwise re-enter the
+// accumulator). Magnitudes are capped to maxScrollAccum so a single
+// huge ScrollY cannot yield an excessive delta. Pure function —
+// Window-free, testable.
+func scrollSteps(acc float32) (delta, residual float32) {
 	if math.IsNaN(float64(acc)) {
 		return 0, 0
 	}
@@ -337,8 +337,9 @@ func scrollSteps(acc float32) (delta int32, residual float32) {
 	} else if acc < -maxScrollAccum {
 		acc = -maxScrollAccum
 	}
-	delta = int32(acc / scrollZoomStep)
-	residual = acc - float32(delta)*scrollZoomStep
+	steps := int32(acc / scrollZoomStep)
+	delta = float32(steps) * scrollZoomStep
+	residual = acc - delta
 	return
 }
 

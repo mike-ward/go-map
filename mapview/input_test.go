@@ -4,8 +4,87 @@ import (
 	"math"
 	"testing"
 
+	"github.com/mike-ward/go-gui/gui"
 	"github.com/mike-ward/go-map/projection"
 )
+
+// onMouseScroll: a single wheel click (ScrollY=1) at gain=0.25 must
+// advance zoom by exactly one scrollZoomStep (0.25). Pins the
+// end-to-end wiring — gain scales the accumulator, accumulator fires
+// one sub-tick, sub-tick writes fractional zoom. A refactor that
+// dropped the `* gain` multiplication would slip past the factory-
+// only `TestMap_*ScrollZoomGain` checks; this test catches it.
+func TestOnMouseScroll_GainScalesAccumulator(t *testing.T) {
+	w := &gui.Window{}
+	id := "m"
+	seed := MapState{Center: projection.LatLng{Lat: 0, Lng: 0}, Zoom: 10}
+	readState(w, id, seed)
+
+	h := onMouseScroll(id, nil, 0.25)
+	h(&gui.Layout{Shape: &gui.Shape{Width: 400, Height: 300}},
+		&gui.Event{ScrollY: 1, MouseX: 200, MouseY: 150}, w)
+
+	got, _ := Snapshot(w, id)
+	want := 10.25
+	if math.Abs(got.Zoom-want) > 1e-6 {
+		t.Errorf("Zoom = %g, want %g (gain=0.25 should advance 0.25/notch)",
+			got.Zoom, want)
+	}
+}
+
+// onMouseScroll: four consecutive wheel clicks at gain=0.25 must
+// accumulate to one full integer zoom (4 × 0.25 = 1.0). Locks the
+// multi-event integration: residual carries across events, not
+// silently discarded.
+func TestOnMouseScroll_GainAccumulatesAcrossEvents(t *testing.T) {
+	w := &gui.Window{}
+	id := "m"
+	seed := MapState{Center: projection.LatLng{Lat: 0, Lng: 0}, Zoom: 10}
+	readState(w, id, seed)
+
+	h := onMouseScroll(id, nil, 0.25)
+	for i := 0; i < 4; i++ {
+		h(&gui.Layout{Shape: &gui.Shape{Width: 400, Height: 300}},
+			&gui.Event{ScrollY: 1, MouseX: 200, MouseY: 150}, w)
+	}
+
+	got, _ := Snapshot(w, id)
+	if math.Abs(got.Zoom-11) > 1e-6 {
+		t.Errorf("Zoom = %g after 4 clicks, want 11", got.Zoom)
+	}
+}
+
+// onMouseScroll: NaN / ±Inf ScrollY must be rejected at the handler
+// boundary before the accumulator would latch the poison. scrollSteps
+// also flushes NaN, so both guards currently mask each other; pin the
+// handler-level guard directly so a removal regression can't hide.
+func TestOnMouseScroll_NonFiniteScrollYIgnored(t *testing.T) {
+	for _, sy := range []float32{
+		float32(math.NaN()),
+		float32(math.Inf(1)),
+		float32(math.Inf(-1)),
+	} {
+		w := &gui.Window{}
+		id := "m"
+		seed := MapState{Center: projection.LatLng{Lat: 0, Lng: 0}, Zoom: 10}
+		readState(w, id, seed)
+
+		h := onMouseScroll(id, nil, 1)
+		h(&gui.Layout{Shape: &gui.Shape{Width: 400, Height: 300}},
+			&gui.Event{ScrollY: sy, MouseX: 200, MouseY: 150}, w)
+
+		got, _ := Snapshot(w, id)
+		if got.Zoom != 10 {
+			t.Errorf("ScrollY=%v: Zoom changed to %g, want 10 (unchanged)",
+				sy, got.Zoom)
+		}
+		// Accumulator must also stay clean — a latched NaN would
+		// propagate through every subsequent scroll event.
+		if acc := nsRead[float32](w, nsScroll, id); acc != 0 {
+			t.Errorf("ScrollY=%v: accumulator = %g, want 0", sy, acc)
+		}
+	}
+}
 
 // TestZoomToward_Invariant: the LatLng under the cursor must not
 // move when zoom changes. This is the defining property of
