@@ -49,45 +49,61 @@ func kineticAnimationID(mapID string) string {
 	return "mapview.kinetic." + mapID
 }
 
-// kineticFling holds the mutable state of an in-flight pan animation.
-// Implementation runs as a repeating gui.Animate callback rather than
-// a custom gui.Animation: the Animation interface exposes an
-// unexported queuedCommand in its Update signature, so go-map cannot
-// define its own Animation type. gui.Animate{Repeat: true, Delay: 0}
-// fires its callback every ~16 ms, giving us a tick loop with the
-// same cadence as any first-party animation.
+// kineticFling is a custom gui.Animation (go-gui v0.12.5+) that
+// slides the map's center under an exponentially-decaying velocity
+// sampled from the drag-release cursor motion. Stops itself by
+// returning false from Update once speed drops below
+// kineticStopSpeed.
+//
+// Center shift is computed at the map's *current* zoom so a mid-
+// fling zoom does not produce a visible speedup — vx/vy are sampled
+// in world-px at startZoom, and the scale factor re-maps them to
+// the current zoom's world-pixel grid. (User-driven zoom cancels
+// the fling outright via cancelKineticPan; the scaling is defence-
+// in-depth for any future mid-fling zoom path.)
 type kineticFling struct {
 	mapID     string
 	animID    string
 	startZoom float64
 	vx, vy    float64
-	last      time.Time
+	stopped   bool
 }
 
-// tick is the per-frame callback bound into the gui.Animate. It
-// decays velocity exponentially, shifts center by v*dt at the map's
-// current zoom, and removes itself when speed falls below
-// kineticStopSpeed.
-//
-// Center shift is computed at the *current* zoom so a mid-fling
-// programmatic zoom does not produce a visible speedup — vx/vy are
-// sampled in world-px at startZoom, and the scale factor re-maps
-// them to the current zoom's world-pixel grid. (User-driven zoom
-// cancels the fling outright via cancelKineticPan; the scaling is
-// defence-in-depth for any future mid-fling zoom path.)
-func (k *kineticFling) tick(_ *gui.Animate, w *gui.Window) {
-	now := time.Now()
-	dt := float32(now.Sub(k.last).Seconds())
-	k.last = now
+// ID implements gui.Animation.
+func (k *kineticFling) ID() string { return k.animID }
+
+// RefreshKind requests a full layout each tick so the map redraws at
+// the new center. Render-only would skip the OnDraw closure and
+// leave tiles at the pre-fling viewport.
+func (k *kineticFling) RefreshKind() gui.AnimationRefreshKind {
+	return gui.AnimationRefreshLayout
+}
+
+// IsStopped implements gui.Animation.
+func (k *kineticFling) IsStopped() bool { return k.stopped }
+
+// SetStart implements gui.Animation. Not used — the animation loop
+// passes dt to Update directly, so start time is unnecessary.
+func (k *kineticFling) SetStart(_ time.Time) {}
+
+// Update decays velocity, shifts center, and returns false once
+// speed falls below kineticStopSpeed — the animation loop retires
+// stopped animations automatically.
+func (k *kineticFling) Update(
+	w *gui.Window, dt float32, _ *gui.AnimationCommands,
+) bool {
+	if k.stopped {
+		return false
+	}
 	if dt <= 0 || !isFinite(float64(dt)) {
-		return
+		return true
 	}
 	decay := math.Exp(-float64(dt) / kineticDecayTau)
 	k.vx *= decay
 	k.vy *= decay
 	if math.Hypot(k.vx, k.vy) < kineticStopSpeed {
-		w.AnimationRemove(k.animID)
-		return
+		k.stopped = true
+		return false
 	}
 	s := nsRead[MapState](w, nsState, k.mapID)
 	scale := math.Exp2(s.Zoom - k.startZoom)
@@ -96,6 +112,7 @@ func (k *kineticFling) tick(_ *gui.Animate, w *gui.Window) {
 	p.Y += k.vy * float64(dt) * scale
 	s.Center = projection.UnprojectF(p, s.Zoom).Clamp()
 	nsWrite(w, nsState, k.mapID, s)
+	return true
 }
 
 // sampleKineticVelocity updates p's world-pixel velocity EMA from a
@@ -146,19 +163,12 @@ func spawnKineticPan(
 	if math.Hypot(p.VelX, p.VelY) < kineticStartSpeed {
 		return false
 	}
-	k := &kineticFling{
+	w.AnimationAdd(&kineticFling{
 		mapID:     mapID,
 		animID:    kineticAnimationID(mapID),
 		startZoom: p.StartZoom,
 		vx:        p.VelX,
 		vy:        p.VelY,
-		last:      now,
-	}
-	w.AnimationAdd(&gui.Animate{
-		AnimID:   k.animID,
-		Repeat:   true,
-		Refresh:  gui.AnimationRefreshLayout,
-		Callback: k.tick,
 	})
 	return true
 }

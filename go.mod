@@ -2,7 +2,13 @@ module github.com/mike-ward/go-map
 
 go 1.26.0
 
-require github.com/mike-ward/go-gui v0.12.4
+require github.com/mike-ward/go-gui v0.12.5
+
+// Local replace active until sum.golang.org catches up to v0.12.5.
+// Typically propagates within ~15 min of the tag push. Drop when
+// `go mod download github.com/mike-ward/go-gui@v0.12.5` succeeds
+// against the default proxy.
+replace github.com/mike-ward/go-gui => ../go-gui
 
 require (
 	github.com/alecthomas/chroma/v2 v2.23.1 // indirect

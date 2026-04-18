@@ -130,10 +130,10 @@ func TestCancelKineticPan_Idempotent(t *testing.T) {
 	cancelKineticPan(w, "m") // must not panic or re-create
 }
 
-// A single tick must decay velocity by exp(-dt/tau) and shift center
-// by the post-decay velocity * dt. Hand-computed expected values so
-// a refactor can't silently change the physics.
-func TestKineticFling_TickDecaysAndShifts(t *testing.T) {
+// A single Update tick must decay velocity by exp(-dt/tau) and shift
+// center by the post-decay velocity * dt. Hand-computed expected
+// values so a refactor can't silently change the physics.
+func TestKineticFling_UpdateDecaysAndShifts(t *testing.T) {
 	w := &gui.Window{}
 	// Seed map state so nsRead/nsWrite can round-trip.
 	nsWrite(w, nsState, "m", MapState{
@@ -146,13 +146,13 @@ func TestKineticFling_TickDecaysAndShifts(t *testing.T) {
 		startZoom: 10,
 		vx:        -10000, // strong leftward fling
 		vy:        0,
-		last:      time.Now().Add(-20 * time.Millisecond),
 	}
 
-	k.tick(nil, w)
+	if !k.Update(w, 0.020, nil) {
+		t.Fatal("Update returned false on active fling")
+	}
 
-	// With dt ~20 ms and tau=0.3 s: decay = exp(-0.02/0.3) ≈ 0.9355.
-	// New vx ≈ -9355. Speed > stopSpeed so tick does not stop.
+	// With dt 20 ms and tau=0.3 s: decay = exp(-0.02/0.3) ≈ 0.9355.
 	wantVx := -10000 * math.Exp(-0.02/kineticDecayTau)
 	if diff := math.Abs(k.vx - wantVx); diff > 200 {
 		t.Errorf("post-decay vx = %v, want ~%v", k.vx, wantVx)
@@ -167,10 +167,10 @@ func TestKineticFling_TickDecaysAndShifts(t *testing.T) {
 	}
 }
 
-// tick must remove its own animation once speed drops below
-// kineticStopSpeed. Seeds a fling with speed just above the floor,
-// runs enough ticks for decay to cross below, asserts removal.
-func TestKineticFling_TickStopsAtFloor(t *testing.T) {
+// Update must return false and flip IsStopped once speed drops below
+// kineticStopSpeed — the animation loop retires stopped animations
+// automatically, so IsStopped is the honest signal.
+func TestKineticFling_UpdateStopsAtFloor(t *testing.T) {
 	w := &gui.Window{}
 	nsWrite(w, nsState, "m", MapState{Zoom: 10})
 	k := &kineticFling{
@@ -178,16 +178,18 @@ func TestKineticFling_TickStopsAtFloor(t *testing.T) {
 		animID:    kineticAnimationID("m"),
 		startZoom: 10,
 		vx:        kineticStopSpeed + 1, // one tick below floor
-		last:      time.Now().Add(-200 * time.Millisecond),
 	}
-	// Register an animation under the ID so removal is observable.
-	w.AnimationAdd(&gui.Animate{AnimID: k.animID, Repeat: true,
-		Callback: func(*gui.Animate, *gui.Window) {}})
 
-	k.tick(nil, w)
+	// 200 ms at tau=0.3 s is about 2/3 of one time constant: decay
+	// factor ≈ exp(-0.667) ≈ 0.513, so vx ends ~ 10.8 px/s — under
+	// the stop threshold.
+	ok := k.Update(w, 0.200, nil)
 
-	if w.HasAnimation(k.animID) {
-		t.Error("animation still registered after drop below floor")
+	if ok {
+		t.Error("Update returned true, want false below stop speed")
+	}
+	if !k.IsStopped() {
+		t.Error("IsStopped = false after falling below stop speed")
 	}
 }
 
