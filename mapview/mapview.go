@@ -78,6 +78,14 @@ type Cfg struct {
 	// callback.
 	OnMove       func(*gui.Window, MapState)
 	OnZoomChange func(*gui.Window, float64)
+	// OnHover fires with the LatLng under the cursor whenever that
+	// value changes — either the cursor moved or the map panned
+	// beneath a stationary cursor. Throttled to the map's frame
+	// cadence (~60 Hz) by the delta-fire pipeline; consumers needing
+	// coarser rate can debounce inside the callback. Cursor entry
+	// seeds a baseline and does not fire; cursor exit resets the
+	// baseline so the next entry fires fresh.
+	OnHover func(*gui.Window, projection.LatLng)
 	// OnClick fires on a mouse-down / mouse-up pair that did not drag
 	// past dragThresholdPx. The LatLng is the projected position of
 	// the up-point. If the click hits an overlay, OnPOISelect runs
@@ -91,25 +99,57 @@ type Cfg struct {
 // the next baseline plus flags for which callbacks (if any) the
 // caller should invoke. Splitting this out from the registry plumbing
 // makes the delta logic unit-testable without a Window.
-func fireDecision(prev lastFired, s MapState) (next lastFired, fireMove, fireZoom bool) {
+//
+// hoverPresent = false signals "cursor is not over the canvas" —
+// any stored hover baseline is cleared so the next entry fires
+// fresh. When hoverPresent is true, hoverLL is compared to the
+// prior baseline; first entry seeds (no fire), subsequent
+// differences fire.
+func fireDecision(
+	prev lastFired, s MapState,
+	hoverLL projection.LatLng, hoverPresent bool,
+) (next lastFired, fireMove, fireZoom, fireHover bool) {
+	next = prev
 	if !prev.Set {
-		return lastFired{State: s, Set: true}, false, false
+		next.State = s
+		next.Set = true
+	} else if prev.State != s {
+		next.State = s
+		fireMove = prev.State.Center != s.Center
+		fireZoom = prev.State.Zoom != s.Zoom
 	}
-	if prev.State == s {
-		return prev, false, false
+	switch {
+	case !hoverPresent:
+		if prev.HoverSet {
+			next.HoverLL = projection.LatLng{}
+			next.HoverSet = false
+		}
+	case !prev.HoverSet:
+		next.HoverLL = hoverLL
+		next.HoverSet = true
+	case prev.HoverLL != hoverLL:
+		next.HoverLL = hoverLL
+		next.HoverSet = true
+		fireHover = true
 	}
-	return lastFired{State: s, Set: true},
-		prev.State.Center != s.Center,
-		prev.State.Zoom != s.Zoom
+	return
 }
 
-// fireCallbacks invokes OnMove / OnZoomChange when the current
-// snapshot differs from the last-fired snapshot. Maintains its own
-// state-registry slot so callback semantics stay independent of the
-// public MapState lifecycle.
+// fireCallbacks invokes OnMove / OnZoomChange / OnHover when the
+// current snapshot differs from the last-fired snapshot. Maintains
+// its own state-registry slot so callback semantics stay
+// independent of the public MapState lifecycle.
+//
+// OnHover resolution needs the projection viewport, which needs
+// canvas dimensions — read from nsCanvas (populated each frame by
+// OnDraw). Before the first OnDraw runs CanvasSize returns ok=false
+// and the hover path short-circuits, matching the "hover not yet
+// meaningful" state.
 func fireCallbacks(w *gui.Window, c Cfg, s MapState) {
 	prev := nsRead[lastFired](w, nsLastFired, c.ID)
-	next, fireMove, fireZoom := fireDecision(prev, s)
+	hoverLL, hoverPresent := resolveHoverLL(w, c.ID, s)
+	next, fireMove, fireZoom, fireHover := fireDecision(
+		prev, s, hoverLL, hoverPresent)
 	if next != prev {
 		nsWrite(w, nsLastFired, c.ID, next)
 	}
@@ -119,6 +159,29 @@ func fireCallbacks(w *gui.Window, c Cfg, s MapState) {
 	if fireZoom && c.OnZoomChange != nil {
 		c.OnZoomChange(w, s.Zoom)
 	}
+	if fireHover && c.OnHover != nil {
+		c.OnHover(w, hoverLL)
+	}
+}
+
+// resolveHoverLL projects the current hover screen coords (if the
+// cursor is over the canvas) into a LatLng. Returns ok=false when
+// the cursor is outside the canvas OR the canvas size is not yet
+// known — both signal "no meaningful hover this frame" to
+// fireDecision.
+func resolveHoverLL(
+	w *gui.Window, id string, s MapState,
+) (projection.LatLng, bool) {
+	h := nsRead[hoverState](w, nsHover, id)
+	if !h.Valid {
+		return projection.LatLng{}, false
+	}
+	cw, ch, ok := CanvasSize(w, id)
+	if !ok {
+		return projection.LatLng{}, false
+	}
+	vp := computeViewport(cw, ch, s)
+	return vp.screenToLatLng(h.X, h.Y), true
 }
 
 // Map returns a map View. Cfg.ID must be non-empty; it is the key

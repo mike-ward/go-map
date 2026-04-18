@@ -98,12 +98,17 @@ type panState struct {
 	VelX, VelY   float64
 }
 
-// lastFired records the MapState last passed to OnMove / OnZoomChange
-// so the next frame can detect deltas. Set=false means "no baseline
-// yet" and suppresses the synthetic first-frame change event.
+// lastFired records the MapState + hover LatLng last passed to
+// OnMove / OnZoomChange / OnHover so the next frame can detect
+// deltas. Set=false means "no MapState baseline yet" and suppresses
+// the synthetic first-frame change event; HoverSet=false means
+// "no hover baseline yet" and likewise suppresses the first hover
+// sample on cursor entry, so OnHover fires only on real movement.
 type lastFired struct {
-	State MapState
-	Set   bool
+	State    MapState
+	Set      bool
+	HoverLL  projection.LatLng
+	HoverSet bool
 }
 
 // nsRead and nsWrite are the only state-registry primitives used by

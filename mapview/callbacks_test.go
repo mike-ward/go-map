@@ -4,12 +4,13 @@ import (
 	"math"
 	"testing"
 
+	"github.com/mike-ward/go-gui/gui"
 	"github.com/mike-ward/go-map/projection"
 )
 
 func TestFireDecision_FirstFrameSeedsBaseline(t *testing.T) {
 	s := MapState{Center: projection.LatLng{Lat: 1, Lng: 2}, Zoom: 5}
-	next, fm, fz := fireDecision(lastFired{}, s)
+	next, fm, fz, _ := fireDecision(lastFired{}, s, projection.LatLng{}, false)
 	if !next.Set || next.State != s {
 		t.Errorf("baseline = %+v, want Set=true State=%+v", next, s)
 	}
@@ -21,7 +22,7 @@ func TestFireDecision_FirstFrameSeedsBaseline(t *testing.T) {
 func TestFireDecision_NoOpWhenStateEqual(t *testing.T) {
 	s := MapState{Center: projection.LatLng{Lat: 1, Lng: 2}, Zoom: 5}
 	prev := lastFired{State: s, Set: true}
-	next, fm, fz := fireDecision(prev, s)
+	next, fm, fz, _ := fireDecision(prev, s, projection.LatLng{}, false)
 	if next != prev {
 		t.Errorf("baseline drifted: %+v -> %+v", prev, next)
 	}
@@ -36,7 +37,7 @@ func TestFireDecision_CenterOnlyChange(t *testing.T) {
 		Set:   true,
 	}
 	now := MapState{Center: projection.LatLng{Lat: 9, Lng: 9}, Zoom: 5}
-	next, fm, fz := fireDecision(prev, now)
+	next, fm, fz, _ := fireDecision(prev, now, projection.LatLng{}, false)
 	if !fm {
 		t.Error("center change must fire OnMove")
 	}
@@ -54,7 +55,7 @@ func TestFireDecision_ZoomOnlyChange(t *testing.T) {
 		Set:   true,
 	}
 	now := MapState{Center: projection.LatLng{Lat: 1, Lng: 2}, Zoom: 7}
-	_, fm, fz := fireDecision(prev, now)
+	_, fm, fz, _ := fireDecision(prev, now, projection.LatLng{}, false)
 	if fm {
 		t.Error("center unchanged must not fire OnMove")
 	}
@@ -69,9 +70,152 @@ func TestFireDecision_BothChange(t *testing.T) {
 		Set:   true,
 	}
 	now := MapState{Center: projection.LatLng{Lat: 5, Lng: 5}, Zoom: 9}
-	_, fm, fz := fireDecision(prev, now)
+	_, fm, fz, _ := fireDecision(prev, now, projection.LatLng{}, false)
 	if !fm || !fz {
 		t.Errorf("both changed: move=%v zoom=%v", fm, fz)
+	}
+}
+
+// Cursor entry seeds the hover baseline — no OnHover fire on the
+// very first valid sample. Matches OnMove / OnZoomChange's first-
+// frame-suppression rule so consumers do not see a synthetic event
+// on every mouse-over.
+func TestFireDecision_FirstHoverSeedsBaseline(t *testing.T) {
+	ll := projection.LatLng{Lat: 40, Lng: -74}
+	next, _, _, fh := fireDecision(
+		lastFired{}, MapState{}, ll, true)
+	if fh {
+		t.Error("first hover sample must not fire OnHover")
+	}
+	if !next.HoverSet || next.HoverLL != ll {
+		t.Errorf("hover baseline = %+v, want set with %+v", next, ll)
+	}
+}
+
+// Same LatLng twice must not fire — a stationary cursor over a
+// stationary map should stay silent.
+func TestFireDecision_HoverUnchangedNoFire(t *testing.T) {
+	ll := projection.LatLng{Lat: 40, Lng: -74}
+	prev := lastFired{HoverLL: ll, HoverSet: true}
+	_, _, _, fh := fireDecision(prev, MapState{}, ll, true)
+	if fh {
+		t.Error("unchanged hover must not fire")
+	}
+}
+
+// Any LatLng difference fires — cursor moved, map panned under a
+// stationary cursor, or both.
+func TestFireDecision_HoverChangeFires(t *testing.T) {
+	prev := lastFired{
+		HoverLL:  projection.LatLng{Lat: 40, Lng: -74},
+		HoverSet: true,
+	}
+	now := projection.LatLng{Lat: 41, Lng: -74}
+	next, _, _, fh := fireDecision(prev, MapState{}, now, true)
+	if !fh {
+		t.Error("hover LatLng change must fire OnHover")
+	}
+	if next.HoverLL != now {
+		t.Errorf("baseline hover = %+v, want %+v", next.HoverLL, now)
+	}
+}
+
+// Cursor exit (hoverPresent=false) clears the baseline so the next
+// entry seeds fresh — without this, a re-entry at the same LatLng
+// as the last pre-exit sample would stay silent forever.
+func TestFireDecision_HoverExitClearsBaseline(t *testing.T) {
+	prev := lastFired{
+		HoverLL:  projection.LatLng{Lat: 40, Lng: -74},
+		HoverSet: true,
+	}
+	next, _, _, fh := fireDecision(
+		prev, MapState{}, projection.LatLng{}, false)
+	if fh {
+		t.Error("cursor exit must not fire OnHover")
+	}
+	if next.HoverSet {
+		t.Error("cursor exit must clear HoverSet")
+	}
+}
+
+// MapState delta and hover delta are independent — a simultaneous
+// pan + hover change fires both without either suppressing the
+// other.
+func TestFireDecision_MoveAndHoverFireTogether(t *testing.T) {
+	prev := lastFired{
+		State:    MapState{Center: projection.LatLng{Lat: 0, Lng: 0}, Zoom: 5},
+		Set:      true,
+		HoverLL:  projection.LatLng{Lat: 40, Lng: -74},
+		HoverSet: true,
+	}
+	s := MapState{Center: projection.LatLng{Lat: 1, Lng: 0}, Zoom: 5}
+	ll := projection.LatLng{Lat: 41, Lng: -74}
+	_, fm, _, fh := fireDecision(prev, s, ll, true)
+	if !fm || !fh {
+		t.Errorf("both deltas: move=%v hover=%v", fm, fh)
+	}
+}
+
+// fireCallbacks + the full registry plumbing: seed a map state,
+// canvas size, and hover, then invoke fireCallbacks twice and
+// confirm OnHover fires on the second call (baseline seeded first).
+func TestFireCallbacks_OnHoverFiresOnDelta(t *testing.T) {
+	w := &gui.Window{}
+	nsWrite(w, nsCanvas, "m", canvasSize{W: 256, H: 256})
+	nsWrite(w, nsHover, "m", hoverState{X: 64, Y: 64, Valid: true})
+	s := MapState{
+		Center: projection.LatLng{Lat: 40, Lng: -74},
+		Zoom:   5,
+	}
+	nsWrite(w, nsState, "m", s)
+
+	var fired int
+	var gotLL projection.LatLng
+	c := Cfg{
+		ID: "m",
+		OnHover: func(_ *gui.Window, ll projection.LatLng) {
+			fired++
+			gotLL = ll
+		},
+	}
+
+	// First call seeds the hover baseline — no fire.
+	fireCallbacks(w, c, s)
+	if fired != 0 {
+		t.Errorf("first fireCallbacks fired OnHover %d times, want 0", fired)
+	}
+
+	// Shift the hover sample so the projected LatLng differs.
+	nsWrite(w, nsHover, "m", hoverState{X: 128, Y: 128, Valid: true})
+	fireCallbacks(w, c, s)
+	if fired != 1 {
+		t.Errorf("second fireCallbacks fired OnHover %d times, want 1", fired)
+	}
+	if (gotLL == projection.LatLng{}) {
+		t.Error("callback LatLng was zero; expected projected value")
+	}
+}
+
+// Cursor outside canvas (hoverState.Valid=false) must not fire
+// OnHover. Guards against a regression that projects a zero hover
+// position as latlng (0,0) and fires on entry.
+func TestFireCallbacks_OnHoverSilentWhenCursorOutsideCanvas(t *testing.T) {
+	w := &gui.Window{}
+	nsWrite(w, nsCanvas, "m", canvasSize{W: 256, H: 256})
+	s := MapState{Zoom: 5}
+	nsWrite(w, nsState, "m", s)
+	// Explicit invalid hover — cursor left the canvas.
+	nsWrite(w, nsHover, "m", hoverState{})
+
+	var fired int
+	c := Cfg{
+		ID:      "m",
+		OnHover: func(*gui.Window, projection.LatLng) { fired++ },
+	}
+	fireCallbacks(w, c, s)
+	fireCallbacks(w, c, s)
+	if fired != 0 {
+		t.Errorf("OnHover fired %d times with invalid hover; want 0", fired)
 	}
 }
 
