@@ -20,7 +20,7 @@ func TestOnMouseScroll_GainScalesAccumulator(t *testing.T) {
 	seed := MapState{Center: projection.LatLng{Lat: 0, Lng: 0}, Zoom: 10}
 	readState(w, id, seed)
 
-	h := onMouseScroll(id, nil, 0.25)
+	h := onMouseScroll(id, 0.25)
 	h(&gui.Layout{Shape: &gui.Shape{Width: 400, Height: 300}},
 		&gui.Event{ScrollY: 1, MouseX: 200, MouseY: 150}, w)
 
@@ -42,7 +42,7 @@ func TestOnMouseScroll_GainAccumulatesAcrossEvents(t *testing.T) {
 	seed := MapState{Center: projection.LatLng{Lat: 0, Lng: 0}, Zoom: 10}
 	readState(w, id, seed)
 
-	h := onMouseScroll(id, nil, 0.25)
+	h := onMouseScroll(id, 0.25)
 	for i := 0; i < 4; i++ {
 		h(&gui.Layout{Shape: &gui.Shape{Width: 400, Height: 300}},
 			&gui.Event{ScrollY: 1, MouseX: 200, MouseY: 150}, w)
@@ -69,7 +69,7 @@ func TestOnMouseScroll_NonFiniteScrollYIgnored(t *testing.T) {
 		seed := MapState{Center: projection.LatLng{Lat: 0, Lng: 0}, Zoom: 10}
 		readState(w, id, seed)
 
-		h := onMouseScroll(id, nil, 1)
+		h := onMouseScroll(id, 1)
 		h(&gui.Layout{Shape: &gui.Shape{Width: 400, Height: 300}},
 			&gui.Event{ScrollY: sy, MouseX: 200, MouseY: 150}, w)
 

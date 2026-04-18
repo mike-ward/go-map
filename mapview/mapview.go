@@ -45,7 +45,15 @@ type Cfg struct {
 	// RemoveOverlay from event callbacks.
 	InitialOverlays []Overlay
 
-	// Data
+	// InitialLayers seed the layer registry on the first frame only.
+	// Exactly one Base layer is expected; extras are demoted at seed
+	// time. Authors add / remove layers after first render via
+	// AddLayer / RemoveLayer / SetBaseLayer. When both InitialLayers
+	// and Source are set, InitialLayers wins.
+	InitialLayers []Layer
+
+	// Data. Source is shorthand for a single Base layer keyed
+	// "base"; ignored when InitialLayers is non-empty.
 	Source tile.Source
 
 	// Appearance
@@ -143,6 +151,11 @@ func Map(cfg Cfg) gui.View {
 			panic("mapview: InitialOverlays entry missing non-empty ID")
 		}
 	}
+	for _, l := range cfg.InitialLayers {
+		if l.LayerID == "" {
+			panic("mapview: InitialLayers entry missing non-empty LayerID")
+		}
+	}
 	return &mapView{cfg: cfg}
 }
 
@@ -165,7 +178,7 @@ func (mv *mapView) GenerateLayout(w *gui.Window) gui.Layout {
 		Zoom:   c.InitialZoom,
 	}
 	s := readState(w, c.ID, seed)
-	seedOverlaysOnce(w, c)
+	seedOnce(w, c)
 
 	// Fire delta-driven callbacks before the draw closure captures
 	// state. Skip the first frame so consumers do not see a synthetic
@@ -186,7 +199,7 @@ func (mv *mapView) GenerateLayout(w *gui.Window) gui.Layout {
 	// registry. The overlay map is shared by reference — mutations
 	// happen through event callbacks that run between frames, never
 	// during OnDraw, so no snapshot copy is required.
-	src := c.Source
+	layers := orderedLayers(w, c.ID)
 	hover := nsRead[hoverState](w, nsHover, c.ID)
 	overlays := readOverlays(w, c.ID)
 	// Resolve the focused marker once per frame; drawFocus and
@@ -195,13 +208,13 @@ func (mv *mapView) GenerateLayout(w *gui.Window) gui.Layout {
 	focused := focusedMarker(overlays, s)
 	onDraw := func(dc *gui.DrawContext) {
 		vp := computeViewport(dc.Width, dc.Height, s)
-		drawTiles(dc, vp, src)
+		drawTiles(dc, vp, layers)
 		drawOverlays(dc, vp, overlays)
 		drawScaleBar(dc, s)
 		drawCoordReadout(dc, vp, s, hover)
 		drawZoomIndicator(dc, s.Zoom)
 		drawHomeButton(dc)
-		drawAttribution(dc, src)
+		drawAttribution(dc, layers)
 		// Focus ring + InfoWindow paint last so the popup sits above
 		// the HUD chrome a screen-reader user cannot otherwise navigate
 		// past. drawFocus stashes the rendered popup rect in the state
@@ -231,7 +244,7 @@ func (mv *mapView) GenerateLayout(w *gui.Window) gui.Layout {
 		Clip:            true,
 		OnDraw:          onDraw,
 		OnClick:         onMouseDown(c, seed),
-		OnMouseScroll:   onMouseScroll(c.ID, c.Source, c.ScrollZoomGain),
+		OnMouseScroll:   onMouseScroll(c.ID, c.ScrollZoomGain),
 		OnMouseMove:     onMouseMove(c.ID),
 		OnMouseLeave:    onMouseLeave(c.ID),
 		OnKeyDown:       onKeyDown(c, seed),
@@ -239,11 +252,11 @@ func (mv *mapView) GenerateLayout(w *gui.Window) gui.Layout {
 	return inner.GenerateLayout(w)
 }
 
-// seedOverlaysOnce seeds Cfg.InitialOverlays on the first frame only.
-// The nsSeeded flag fires unconditionally after the first render so an
-// immediate-mode consumer that starts with an empty InitialOverlays
-// and populates it on a later frame cannot trigger a delayed reseed.
-func seedOverlaysOnce(w *gui.Window, c Cfg) {
+// seedOnce seeds Cfg.InitialOverlays and Cfg.InitialLayers on the
+// first frame only. The nsSeeded flag fires unconditionally so an
+// immediate-mode consumer that populates seeds on a later frame
+// cannot trigger a delayed reseed.
+func seedOnce(w *gui.Window, c Cfg) {
 	if nsRead[bool](w, nsSeeded, c.ID) {
 		return
 	}
@@ -253,7 +266,37 @@ func seedOverlaysOnce(w *gui.Window, c Cfg) {
 			bm.Set(o.ID(), o)
 		}
 	}
+	seedInitialLayers(w, c)
 	nsWrite(w, nsSeeded, c.ID, true)
+}
+
+// seedInitialLayers writes Cfg.InitialLayers (or the Cfg.Source
+// shorthand) into the layer registry. Extra Base entries past the
+// first are demoted to Reference so exactly one Base is ever active.
+func seedInitialLayers(w *gui.Window, c Cfg) {
+	bm := readLayers(w, c.ID)
+	if len(c.InitialLayers) > 0 {
+		sawBase := false
+		for _, l := range c.InitialLayers {
+			if l.Kind == LayerKindBase {
+				if sawBase {
+					l.Kind = LayerKindReference
+				} else {
+					sawBase = true
+				}
+			}
+			bm.Set(l.LayerID, normalizeLayer(l))
+		}
+		return
+	}
+	if c.Source != nil {
+		bm.Set("base", normalizeLayer(Layer{
+			LayerID: "base",
+			Source:  c.Source,
+			Kind:    LayerKindBase,
+			Visible: true,
+		}))
+	}
 }
 
 // drawOverlays renders each overlay whose projected bounding box

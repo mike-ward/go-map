@@ -21,6 +21,7 @@ const (
 	nsInfoRect  = "mapview.inforect"
 	nsVersion   = "mapview.version"
 	nsA11y      = "mapview.a11y"
+	nsLayers    = "mapview.layers"
 	capMaps     = 16
 )
 
@@ -90,7 +91,7 @@ func nsWrite[V any](w *gui.Window, ns, id string, v V) {
 // DrawCanvas version. nsInfoRect writes come from inside OnDraw —
 // bumping there would loop.
 func invalidatesRender(ns string) bool {
-	return ns == nsState || ns == nsHover
+	return ns == nsState || ns == nsHover || ns == nsLayers
 }
 
 // bumpVersion increments the per-map DrawCanvas cache key. The zero
@@ -185,18 +186,24 @@ func clampZoom(z float64) float64 {
 // 10001st AddOverlay evicts the first registered.
 const capOverlaysPerMap = 10_000
 
-// readOverlays returns the live overlay map for id, creating an empty
-// BoundedMap if the registry has no entry yet. Mutators receive the
-// same pointer the widget reads, so writes take effect on the next
+// readOverlays returns the live overlay map for id. Mutators receive
+// the same pointer the widget reads, so writes take effect on the next
 // frame. BoundedMap.Range iterates in insertion order, which drives
 // the deterministic z-order of drawOverlays and panDragEnd hit-test.
 func readOverlays(w *gui.Window, id string) *gui.BoundedMap[string, Overlay] {
-	sm := gui.StateMap[string, *gui.BoundedMap[string, Overlay]](
-		w, nsOverlays, capMaps)
+	return readRegistryMap[Overlay](w, nsOverlays, id, capOverlaysPerMap)
+}
+
+// readRegistryMap returns the live BoundedMap[string, V] for id in ns,
+// creating an empty one (capped at maxEntries) if absent. Shared by
+// overlay and layer registries so the create-on-demand pattern exists
+// once.
+func readRegistryMap[V any](w *gui.Window, ns, id string, maxEntries int) *gui.BoundedMap[string, V] {
+	sm := gui.StateMap[string, *gui.BoundedMap[string, V]](w, ns, capMaps)
 	if bm, ok := sm.Get(id); ok && bm != nil {
 		return bm
 	}
-	bm := gui.NewBoundedMap[string, Overlay](capOverlaysPerMap)
+	bm := gui.NewBoundedMap[string, V](maxEntries)
 	sm.Set(id, bm)
 	return bm
 }

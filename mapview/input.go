@@ -5,7 +5,6 @@ import (
 
 	"github.com/mike-ward/go-gui/gui"
 	"github.com/mike-ward/go-map/projection"
-	"github.com/mike-ward/go-map/tile"
 )
 
 // dragThresholdPx is the pixel distance separating a click from a pan.
@@ -266,7 +265,7 @@ func panDragEnd(c Cfg) func(*gui.Layout, *gui.Event, *gui.Window) {
 // accumulator, so gain < 1 yields fractional zoom even on notch
 // hardware. Zoom pivots toward the cursor so the LatLng under the
 // cursor stays fixed.
-func onMouseScroll(id string, src tile.Source, gain float32) func(*gui.Layout, *gui.Event, *gui.Window) {
+func onMouseScroll(id string, gain float32) func(*gui.Layout, *gui.Event, *gui.Window) {
 	return func(l *gui.Layout, e *gui.Event, w *gui.Window) {
 		if e.ScrollY == 0 {
 			return
@@ -287,7 +286,7 @@ func onMouseScroll(id string, src tile.Source, gain float32) func(*gui.Layout, *
 
 		s := nsRead[MapState](w, nsState, id)
 		newZoom := clampZoom(s.Zoom + float64(delta))
-		if srcMax := float64(sourceMaxZoom(src)); newZoom > srcMax {
+		if srcMax := float64(baseMaxZoom(w, id)); newZoom > srcMax {
 			newZoom = srcMax
 		}
 		if newZoom == s.Zoom {
@@ -381,11 +380,15 @@ func onMouseLeave(id string) func(*gui.Layout, *gui.Event, *gui.Window) {
 	}
 }
 
-func sourceMaxZoom(src tile.Source) uint32 {
-	if src == nil {
+// baseMaxZoom reports the zoom clamp for wheel / keyboard input: the
+// smaller of maxZoom and the base layer's MaxZoom. Reference layers
+// silently clip at higher Z; only the base constrains input.
+func baseMaxZoom(w *gui.Window, id string) uint32 {
+	l, ok := baseLayer(w, id)
+	if !ok || l.Source == nil {
 		return maxZoom
 	}
-	if z := src.MaxZoom(); z < maxZoom {
+	if z := l.Source.MaxZoom(); z < maxZoom {
 		return z
 	}
 	return maxZoom
@@ -403,7 +406,7 @@ func sourceMaxZoom(src tile.Source) uint32 {
 // fires OnPOISelect and opens the InfoWindow. Escape closes the
 // InfoWindow, then (on a second press) exits marker mode.
 func onKeyDown(c Cfg, seed MapState) func(*gui.Layout, *gui.Event, *gui.Window) {
-	id, src := c.ID, c.Source
+	id := c.ID
 	return func(_ *gui.Layout, e *gui.Event, w *gui.Window) {
 		s := gui.StateReadOr[string, MapState](w, nsState, id, seed)
 		if handleFocusKey(c, &s, e, w) {
@@ -431,8 +434,8 @@ func onKeyDown(c Cfg, seed MapState) func(*gui.Layout, *gui.Event, *gui.Window) 
 		case gui.KeyEqual, gui.KeyKPAdd:
 			// Integer delta — slice 5a keeps keyboard and wheel on
 			// whole-number steps. clampZoom enforces the ceiling;
-			// sourceMaxZoom adds a tighter per-source cap when set.
-			if nz := clampZoom(s.Zoom + 1); nz <= float64(sourceMaxZoom(src)) {
+			// baseMaxZoom adds a tighter per-source cap when set.
+			if nz := clampZoom(s.Zoom + 1); nz <= float64(baseMaxZoom(w, id)) {
 				s.Zoom = nz
 			}
 		case gui.KeyMinus, gui.KeyKPSubtract:

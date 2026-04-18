@@ -626,7 +626,7 @@ func TestMap_PanicsOnNilInitialOverlay(t *testing.T) {
 	Map(Cfg{ID: "m", InitialOverlays: []Overlay{nil}})
 }
 
-// seedOverlaysOnce must run exactly once per map ID. Resurrecting a
+// seedOnce must run exactly once per map ID. Resurrecting a
 // removed overlay on the next frame would silently defeat
 // RemoveOverlay for any overlay that happened to be in InitialOverlays.
 func TestSeedOverlaysOnce_DoesNotResurrectRemoved(t *testing.T) {
@@ -637,11 +637,11 @@ func TestSeedOverlaysOnce_DoesNotResurrectRemoved(t *testing.T) {
 			&Marker{MarkerID: "a", Pos: projection.LatLng{Lat: 1, Lng: 2}},
 		},
 	}
-	seedOverlaysOnce(w, c)
+	seedOnce(w, c)
 	RemoveOverlay(w, "m", "a")
-	seedOverlaysOnce(w, c)
+	seedOnce(w, c)
 	if _, ok := readOverlays(w, "m").Get("a"); ok {
-		t.Error("second seedOverlaysOnce call resurrected removed overlay")
+		t.Error("second seedOnce call resurrected removed overlay")
 	}
 }
 

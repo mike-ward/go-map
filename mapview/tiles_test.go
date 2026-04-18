@@ -188,7 +188,10 @@ func TestDrawTiles_FractionalZoomTileSize(t *testing.T) {
 		Center: projection.LatLng{Lat: 0, Lng: 0},
 		Zoom:   11.4,
 	})
-	drawTiles(dc, vp, stubSource{})
+	drawTiles(dc, vp, []Layer{{
+		LayerID: "base", Source: stubSource{}, Kind: LayerKindBase,
+		Visible: true, Opacity: 1,
+	}})
 	imgs := dc.Images()
 	if len(imgs) == 0 {
 		t.Fatal("no tile images emitted")

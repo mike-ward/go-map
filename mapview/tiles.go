@@ -112,22 +112,37 @@ func (vp viewport) MetersToPixels(lat, meters float64) float32 {
 // Zoom reports the viewport's fractional zoom level.
 func (vp viewport) Zoom() float64 { return vp.Z }
 
-// drawTiles renders the visible tile grid. Tiles with a URL from the
-// Source render as gui.DrawContext.Image; sources without a URL (or
-// no Source at all) fall back to a labeled placeholder checkerboard
-// so pan/zoom is still usable. Tiles are fetched at integer TileZ and
-// drawn at TileSize × TileScale pixels so fractional zoom fills the
-// canvas without seams. ceil() on the scaled size suppresses subpixel
-// gaps between neighboring tiles at the cost of ≤1 px overdraw on
-// transparent tile edges — invisible on opaque OSM tiles.
-func drawTiles(dc *gui.DrawContext, vp viewport, src tile.Source) {
+// drawTiles renders the visible tile grid for every layer in draw
+// order (base first, references stacked on top). Tiles with a URL from
+// the layer's Source render as gui.DrawContext.Image. The base layer
+// draws a labeled placeholder checkerboard when its Source is nil or
+// returns an empty URL, so pan/zoom stays usable before any source is
+// wired. Reference layers never draw a placeholder — a missing URL
+// means "no data here", which leaves the base showing through.
+//
+// Tiles are fetched at integer TileZ and drawn at TileSize × TileScale
+// pixels so fractional zoom fills the canvas without seams. ceil() on
+// the scaled size suppresses subpixel gaps between neighbors at the
+// cost of ≤1 px overdraw on transparent tile edges.
+func drawTiles(dc *gui.DrawContext, vp viewport, layers []Layer) {
 	maxN := int32(1) << vp.TileZ
 	ts := float32(math.Ceil(float64(projection.TileSize) * vp.TileScale))
-	even := gui.Hex(0xE8E6E0)
-	odd := gui.Hex(0xDCDAD3)
-	border := gui.Hex(0xBDBAB3)
-	labelStyle := gui.TextStyle{Size: 10, Color: gui.Hex(0x888888)}
 
+	if len(layers) == 0 {
+		drawTilePlaceholders(dc, vp, maxN, ts)
+		return
+	}
+	for i, l := range layers {
+		isBase := i == 0 && l.Kind == LayerKindBase
+		drawLayerTiles(dc, vp, l.Source, maxN, ts, isBase)
+	}
+}
+
+// drawLayerTiles draws one layer's visible tiles. placeholderOK gates
+// the labeled checkerboard fallback — only the base layer renders it,
+// so reference layers stay transparent where their source has no tile.
+func drawLayerTiles(dc *gui.DrawContext, vp viewport, src tile.Source,
+	maxN int32, ts float32, placeholderOK bool) {
 	for ty := vp.MinTY; ty <= vp.MaxTY; ty++ {
 		if ty < 0 || ty >= maxN {
 			continue
@@ -145,19 +160,57 @@ func drawTiles(dc *gui.DrawContext, vp viewport, src tile.Source) {
 				})
 			}
 			if url != "" {
-				dc.Image(x, y, ts, ts, url, gui.Opt[float32]{}, even)
+				// Base tiles are opaque; paint the placeholder gray
+				// behind them so decode latency does not flash the
+				// canvas clear color. Reference tiles are frequently
+				// transparent (boundaries, labels) — a solid bg
+				// there would occlude the base, so pass gui.Color{}
+				// (fully transparent).
+				bg := gui.Color{}
+				if placeholderOK {
+					bg = tilePlaceholderEven
+				}
+				dc.Image(x, y, ts, ts, url, gui.Opt[float32]{}, bg)
 				continue
 			}
-			// Placeholder.
-			c := even
-			if (int32(wrapped)+ty)&1 == 1 {
-				c = odd
+			if placeholderOK {
+				drawTilePlaceholder(dc, x, y, ts, wrapped, ty, vp.TileZ)
 			}
-			dc.FilledRect(x, y, ts, ts, c)
-			dc.Rect(x, y, ts, ts, border, 1)
-			dc.Text(x+6, y+4,
-				(tile.Coord{Z: vp.TileZ, X: wrapped, Y: uint32(ty)}).String(),
-				labelStyle)
 		}
 	}
+}
+
+// drawTilePlaceholders fills the whole viewport with the checkerboard
+// fallback when no layers are registered.
+func drawTilePlaceholders(dc *gui.DrawContext, vp viewport, maxN int32, ts float32) {
+	for ty := vp.MinTY; ty <= vp.MaxTY; ty++ {
+		if ty < 0 || ty >= maxN {
+			continue
+		}
+		for tx := vp.MinTX; tx <= vp.MaxTX; tx++ {
+			wrapped := wrapTileX(tx, maxN)
+			x, y := vp.tileScreenPos(tx, ty)
+			drawTilePlaceholder(dc, x, y, ts, wrapped, ty, vp.TileZ)
+		}
+	}
+}
+
+var (
+	tilePlaceholderEven   = gui.Hex(0xE8E6E0)
+	tilePlaceholderOdd    = gui.Hex(0xDCDAD3)
+	tilePlaceholderBorder = gui.Hex(0xBDBAB3)
+	tilePlaceholderLabel  = gui.TextStyle{Size: 10, Color: gui.Hex(0x888888)}
+)
+
+func drawTilePlaceholder(dc *gui.DrawContext, x, y, ts float32,
+	wrapped uint32, ty int32, tz uint32) {
+	c := tilePlaceholderEven
+	if (int32(wrapped)+ty)&1 == 1 {
+		c = tilePlaceholderOdd
+	}
+	dc.FilledRect(x, y, ts, ts, c)
+	dc.Rect(x, y, ts, ts, tilePlaceholderBorder, 1)
+	dc.Text(x+6, y+4,
+		(tile.Coord{Z: tz, X: wrapped, Y: uint32(ty)}).String(),
+		tilePlaceholderLabel)
 }

@@ -3,11 +3,12 @@ package mapview
 import (
 	"fmt"
 	"math"
+	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/mike-ward/go-gui/gui"
 	"github.com/mike-ward/go-map/projection"
-	"github.com/mike-ward/go-map/tile"
 )
 
 // HUD overlay sizes and colors. Kept package-local and free of
@@ -30,14 +31,13 @@ const (
 	scaleBarRowSpacing float32 = 10
 )
 
-// drawAttribution renders the tile source's required credit string in
-// the bottom-right corner. Required by OSM and most providers; not
+// drawAttribution renders the composite credit string for every visible
+// layer in the bottom-right corner. Credits are joined with " | " in
+// layer draw order, duplicates skipped so a base and reference sharing
+// a provider read once. Required by OSM and most providers; not
 // suppressible.
-func drawAttribution(dc *gui.DrawContext, src tile.Source) {
-	if src == nil {
-		return
-	}
-	text := src.Attribution()
+func drawAttribution(dc *gui.DrawContext, layers []Layer) {
+	text := composeAttribution(layers)
 	if text == "" {
 		return
 	}
@@ -45,6 +45,31 @@ func drawAttribution(dc *gui.DrawContext, src tile.Source) {
 	x := dc.Width - w - 4
 	y := dc.Height - h - 4
 	drawHUDChip(dc, x, y, w, h, text, attrStyle)
+}
+
+// maxAttributionBytes caps each layer's credit string before join so a
+// pathological Source.Attribution() cannot drive HUD layout unbounded.
+const maxAttributionBytes = 256
+
+// composeAttribution joins unique, truncated Attribution strings in
+// layer draw order with " | ". Dedupe is a linear scan — bounded by
+// capLayersPerMap so an O(n²) scan beats per-frame map allocation.
+func composeAttribution(layers []Layer) string {
+	if len(layers) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(layers))
+	for _, l := range layers {
+		if l.Source == nil {
+			continue
+		}
+		text := truncateUTF8(l.Source.Attribution(), maxAttributionBytes)
+		if text == "" || slices.Contains(parts, text) {
+			continue
+		}
+		parts = append(parts, text)
+	}
+	return strings.Join(parts, " | ")
 }
 
 // drawCoordReadout renders the geographic location under the mouse

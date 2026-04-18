@@ -266,4 +266,12 @@ func TestInvalidatingNamespaces_AutoBump(t *testing.T) {
 			t.Errorf("nsHover write did not bump: version = %d", v)
 		}
 	})
+	t.Run("nsLayers", func(t *testing.T) {
+		w := &gui.Window{}
+		nsWrite(w, nsLayers, "m",
+			gui.NewBoundedMap[string, Layer](capLayersPerMap))
+		if v := readVersion(w, "m"); v != 1 {
+			t.Errorf("nsLayers write did not bump: version = %d", v)
+		}
+	})
 }
