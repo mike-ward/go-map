@@ -8,6 +8,7 @@ Guidance for Claude Code when working in this repository.
 go test ./...                   # run all tests
 go vet ./...                    # static analysis
 golangci-lint run ./...         # full lint
+go run ./cmd/a11ylint ./...     # overlay-Label a11y lint
 go build ./...                  # build all packages
 go run ./examples/basic         # run demo (requires SDL2)
 ```
@@ -81,7 +82,10 @@ Do not add an option to hide it — OSM tile policy forbids.
 
 ## Pre-Commit Checks
 
-Always run `gofmt -l .` and `golangci-lint run ./...` before committing.
+Always run `gofmt -l .`, `golangci-lint run ./...`, and
+`go run ./cmd/a11ylint ./...` before committing. The a11ylint tool
+flags mapview overlay composite literals missing a non-empty `Label`
+field — accessibility is a constraint, not a feature.
 
 ## Gotchas
 

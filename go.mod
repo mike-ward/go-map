@@ -2,7 +2,10 @@ module github.com/mike-ward/go-map
 
 go 1.26.0
 
-require github.com/mike-ward/go-gui v0.12.5
+require (
+	github.com/mike-ward/go-gui v0.12.5
+	golang.org/x/tools v0.44.0
+)
 
 require (
 	github.com/alecthomas/chroma/v2 v2.23.1 // indirect
@@ -15,5 +18,7 @@ require (
 	github.com/veandco/go-sdl2 v0.4.40 // indirect
 	github.com/yuin/goldmark v1.8.2 // indirect
 	github.com/yuin/goldmark-emoji v1.0.6 // indirect
+	golang.org/x/mod v0.35.0 // indirect
+	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.43.0 // indirect
 )
