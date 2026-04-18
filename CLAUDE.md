@@ -106,6 +106,11 @@ field — accessibility is a constraint, not a feature.
   `dc.ImageWithFetcher` (go-gui v0.12.4+), so wiring
   `cfg.ImageFetcher` is only needed when the Source does not
   implement `HTTPFetcher`.
+- **Gallery thumbnail UA.** `Gallery` forwards `ThumbnailURL` to
+  `gui.Image`, which uses the window-level `ImageFetcher`. If the
+  thumbnail URL lives on the same tile server as the Source, the UA
+  applies; CDN-hosted previews are typically UA-agnostic. Prefer
+  static CDN thumbnails over live tile endpoints.
 
 ## Unresolved
 
