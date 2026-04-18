@@ -115,6 +115,30 @@ func TestLegend_InsertionOrderPreserved(t *testing.T) {
 	}
 }
 
+// TestLegend_GenerateLayoutPropagatesChildren guards against a
+// regression where legendView.GenerateLayout returned only the inner
+// Column's bare shape — go-gui's GenerateViewLayout then skipped the
+// children because Content() is nil, producing an empty sidebar at
+// runtime while buildLegend unit tests still passed. Exercising the
+// widget through the real view pipeline is the only place this surfaces.
+func TestLegend_GenerateLayoutPropagatesChildren(t *testing.T) {
+	w := &gui.Window{}
+	AddLayer(w, "m", Layer{
+		LayerID: "a", Name: "A", Source: fakeSource{}, Visible: true,
+	})
+	AddLayer(w, "m", Layer{
+		LayerID: "b", Name: "B", Source: fakeSource{}, Visible: true,
+	})
+	root := gui.GenerateViewLayout(
+		Legend(LegendCfg{MapID: "m", Title: "Layers"}), w)
+	// Root layout is the Column shape; its Children must include the
+	// Title Hero Text + one Toggle per named layer. Three children
+	// total. An empty Children slice is the regression.
+	if got := len(root.Children); got != 3 {
+		t.Errorf("Children = %d, want 3 (Title + 2 Toggles)", got)
+	}
+}
+
 // TestToggleLayerVisible_Flips exercises the mutator used by the row
 // OnClick closure. Direct — the closure wiring is a one-liner, so
 // testing the helper proves the behaviour without standing up a
