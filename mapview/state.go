@@ -22,8 +22,28 @@ const (
 	nsVersion   = "mapview.version"
 	nsA11y      = "mapview.a11y"
 	nsLayers    = "mapview.layers"
+	nsCanvas    = "mapview.canvas"
 	capMaps     = 16
 )
+
+// canvasSize is the most recent OnDraw canvas dimensions reported by
+// a map's DrawCanvas. Written each frame from the OnDraw closure (no
+// version bump — render-loop read by the Overview widget on the next
+// frame) and read by any consumer that needs pixel dims for viewport
+// math. One-frame lag accepted; the alternative (piping dims out of
+// layout) would widen the widget API for a locator-only use case.
+type canvasSize struct{ W, H float32 }
+
+// CanvasSize returns the last-rendered canvas dimensions of the map
+// with the given ID. ok is false before the first frame; callers must
+// check before trusting W / H — the zero value is not a valid size.
+func CanvasSize(w *gui.Window, id string) (width, height float32, ok bool) {
+	c := nsRead[canvasSize](w, nsCanvas, id)
+	if c.W <= 0 || c.H <= 0 {
+		return 0, 0, false
+	}
+	return c.W, c.H, true
+}
 
 // MapState is the persistent per-map state held in the Window state
 // registry. Accessed by the widget factory each frame and mutated by

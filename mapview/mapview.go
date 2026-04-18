@@ -207,6 +207,11 @@ func (mv *mapView) GenerateLayout(w *gui.Window) gui.Layout {
 	// non-zero — no reason to pay for it twice.
 	focused := focusedMarker(overlays, s)
 	onDraw := func(dc *gui.DrawContext) {
+		// Stash canvas dims for the Overview widget to read next
+		// frame. nsCanvas is NOT in the invalidatesRender whitelist —
+		// a write from inside OnDraw bumping version would feedback-
+		// loop the cache, mirroring the nsInfoRect rule.
+		nsWrite(w, nsCanvas, c.ID, canvasSize{W: dc.Width, H: dc.Height})
 		vp := computeViewport(dc.Width, dc.Height, s)
 		drawTiles(dc, vp, layers)
 		drawOverlays(dc, vp, overlays)
