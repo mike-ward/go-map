@@ -136,7 +136,10 @@ func markerByID(w *gui.Window, id, markerID string) *Marker {
 	if !ok {
 		return nil
 	}
-	m, _ := o.(*Marker)
+	m, ok := o.(*Marker)
+	if !ok {
+		return nil
+	}
 	return m
 }
 

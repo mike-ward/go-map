@@ -41,11 +41,14 @@ func OSM() Source {
 
 // OSMWithUserAgent returns an OSM tile source using the given
 // User-Agent string. CR and LF are stripped to prevent header
-// injection at write time (net/http would otherwise reject the
-// request at runtime).
+// injection. Strings longer than MaxUserAgentLen are silently
+// truncated; callers with dynamically constructed UAs should
+// verify len(ua) <= MaxUserAgentLen before calling.
 func OSMWithUserAgent(ua string) Source {
 	return &osmSource{
-		client:    &http.Client{Timeout: 15 * time.Second},
+		// 15 s matches OSM's recommended per-tile deadline; longer would
+		// hold connections open during tile-server congestion.
+		client: &http.Client{Timeout: 15 * time.Second},
 		userAgent: SanitizeHeader(ua),
 		urlPrefix: osmURLPrefix,
 	}
@@ -116,7 +119,7 @@ func (s *osmSource) Fetch(ctx context.Context, c Coord) ([]byte, error) {
 		}
 		if !IsPNG(body) {
 			return nil, fmt.Errorf(
-				"tile %s: %d-byte body is not a PNG", url, len(body))
+				"tile %s: %d-byte body is not a PNG image", url, len(body))
 		}
 		return body, nil
 	case http.StatusNotFound:
@@ -167,7 +170,7 @@ func (s *osmSource) HTTPFetcher() func(ctx context.Context, url string) (*http.R
 		}
 		if !IsPNG(body) {
 			return nil, fmt.Errorf(
-				"tile %s: %d-byte body is not a PNG", url, len(body))
+				"tile %s: %d-byte body is not a PNG image", url, len(body))
 		}
 		resp.Body = io.NopCloser(bytes.NewReader(body))
 		resp.ContentLength = int64(len(body))

@@ -184,7 +184,9 @@ func New(cfg Cfg) (tile.Source, error) {
 	buf.WriteString("&bbox=")
 
 	return &source{
-		client:      &http.Client{Timeout: 20 * time.Second},
+		// 20 s — WMS servers do server-side rendering before responding,
+		// which is slower than a simple tile-file serve (OSM uses 15 s).
+		client: &http.Client{Timeout: 20 * time.Second},
 		userAgent:   tile.SanitizeHeader(ua),
 		urlPrefix:   buf.String(),
 		format:      format,

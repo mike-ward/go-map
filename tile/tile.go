@@ -5,7 +5,7 @@ package tile
 import (
 	"context"
 	"errors"
-	"fmt"
+	"strconv"
 )
 
 // Coord is a slippy-tile address: zoom, column, row.
@@ -18,7 +18,13 @@ type Coord struct {
 
 // String returns the canonical {z}/{x}/{y} form used in most tile URLs.
 func (c Coord) String() string {
-	return fmt.Sprintf("%d/%d/%d", c.Z, c.X, c.Y)
+	var buf [32]byte
+	b := strconv.AppendUint(buf[:0], uint64(c.Z), 10)
+	b = append(b, '/')
+	b = strconv.AppendUint(b, uint64(c.X), 10)
+	b = append(b, '/')
+	b = strconv.AppendUint(b, uint64(c.Y), 10)
+	return string(b)
 }
 
 // Valid reports whether c is in range for its zoom level.

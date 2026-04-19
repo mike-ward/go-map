@@ -70,6 +70,9 @@ func focusedMarker(bm *gui.BoundedMap[string, Overlay], s MapState) *Marker {
 	if !ok {
 		return nil
 	}
-	m, _ := o.(*Marker)
+	m, ok := o.(*Marker)
+	if !ok {
+		return nil
+	}
 	return m
 }
