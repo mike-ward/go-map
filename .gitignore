@@ -28,3 +28,6 @@ Thumbs.db
 
 # Tile cache (if persisted during dev)
 tile-cache/
+
+# deep-dive is from antivibe skill
+deep-dive/
