@@ -5,6 +5,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## v0.3.2 — 2026-04-26
+
+### Changed
+- `mapview`: split `input.go` into `keyboard.go`, `pan.go`, `scroll.go`;
+  harden non-finite coordinates
+- Bump `go-gui` to v0.12.7
+
+### Added
+- Docs: `tile-mapview` deep-dive; ignore antivibe deep-dive dir
+
 ## v0.3.1 — 2026-04-19
 
 ### Added
