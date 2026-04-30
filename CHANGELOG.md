@@ -5,6 +5,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## v0.4.0 — 2026-04-30
+
+### Changed
+- Bump `go-gui` to v0.17.0
+- Bump `go-glyph` to v1.7.0 (indirect)
+
 ## v0.3.2 — 2026-04-26
 
 ### Changed
