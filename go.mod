@@ -3,7 +3,7 @@ module github.com/mike-ward/go-map
 go 1.26.0
 
 require (
-	github.com/mike-ward/go-gui v0.17.0
+	github.com/mike-ward/go-gui v0.19.0
 	golang.org/x/sync v0.20.0
 	golang.org/x/tools v0.44.0
 )
@@ -14,7 +14,7 @@ require (
 	github.com/go-gl/gl v0.0.0-20260331235117-4566fea9a276 // indirect
 	github.com/go-pdf/fpdf v0.9.0 // indirect
 	github.com/godbus/dbus/v5 v5.2.2 // indirect
-	github.com/mike-ward/go-glyph v1.7.0 // indirect
+	github.com/mike-ward/go-glyph v1.7.1 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/tdewolff/parse/v2 v2.8.12 // indirect
 	github.com/veandco/go-sdl2 v0.4.40 // indirect
