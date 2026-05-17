@@ -5,6 +5,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## v0.4.1 — 2026-05-17
+
+### Changed
+- Bump `go-gui` to v0.19.1 (scroll phase bridge, context menu focus fix,
+  animation heartbeat, Metal autorelease fix)
+- Bump `go-glyph` to v1.7.1 (indirect)
+
 ## v0.4.0 — 2026-04-30
 
 ### Changed
