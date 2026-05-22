@@ -221,7 +221,7 @@ func drawTilePlaceholder(dc *gui.DrawContext, x, y, ts float32,
 		c = tilePlaceholderOdd
 	}
 	dc.FilledRect(x, y, ts, ts, c)
-	dc.Rect(x, y, ts, ts, tilePlaceholderBorder, 1)
+	dc.Rect(x, y, ts, ts, tilePlaceholderBorder, 1/dc.Scale)
 	dc.Text(x+6, y+4,
 		(tile.Coord{Z: tz, X: wrapped, Y: uint32(ty)}).String(),
 		tilePlaceholderLabel)

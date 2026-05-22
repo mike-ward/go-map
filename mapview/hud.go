@@ -195,9 +195,10 @@ func drawScaleBar(dc *gui.DrawContext, s MapState) {
 }
 
 func drawScaleSegment(dc *gui.DrawContext, x, y, length, tickH float32, label string) {
-	dc.Line(x, y, x+length, y, hudFG, 1)
-	dc.Line(x, y-tickH, x, y, hudFG, 1)
-	dc.Line(x+length, y-tickH, x+length, y, hudFG, 1)
+	w := 1 / dc.Scale
+	dc.Line(x, y, x+length, y, hudFG, w)
+	dc.Line(x, y-tickH, x, y, hudFG, w)
+	dc.Line(x+length, y-tickH, x+length, y, hudFG, w)
 	dc.Text(x+length+4, y-7, label, scaleStyle)
 }
 
